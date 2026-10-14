@@ -51,7 +51,7 @@ export const Dashboard: React.FC = () => {
         const data = await fetchStockHistory(selectedSymbol);
         setHistory(data);
       } catch (err) {
-        console.error('Failed to load history for', selectedSymbol);
+        console.error('Failed to load history for', selectedSymbol, err);
         // We don't set global error here to not break the whole UI
       } finally {
         setIsLoadingHistory(false);
