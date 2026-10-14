@@ -1,17 +1,28 @@
 import React, { useMemo } from 'react';
-import type{ Stock, StockHistory } from '../types/api';
+import type { Stock, StockHistory } from '../types/api';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { Bookmark, BookmarkCheck } from 'lucide-react';
+import { Bookmark, BookmarkCheck, Clock } from 'lucide-react';
+import { COMPANY_NAMES } from '../constants/stocks';
 
 interface StockCardProps {
   stock: Stock | null;
   history: StockHistory[];
   isMonitored: boolean;
+  isWaitlisted: boolean;
   onToggleMonitor: (symbol: string) => void;
+  onToggleWaitlist: (symbol: string) => void;
   isLoading: boolean;
 }
 
-export const StockCard: React.FC<StockCardProps> = ({ stock, history, isMonitored, onToggleMonitor, isLoading }) => {
+export const StockCard: React.FC<StockCardProps> = ({ 
+  stock, 
+  history, 
+  isMonitored, 
+  isWaitlisted, 
+  onToggleMonitor, 
+  onToggleWaitlist, 
+  isLoading 
+}) => {
   const chartData = useMemo(() => {
     return history.map(item => ({
       time: new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
@@ -33,11 +44,14 @@ export const StockCard: React.FC<StockCardProps> = ({ stock, history, isMonitore
 
   return (
     <div className="card bento-main">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '2px' }}>
             <h2 style={{ fontSize: '1.5rem', fontWeight: 600 }}>{stock.symbol}</h2>
             <span style={{ fontSize: '0.75rem', padding: '4px 8px', background: 'var(--surface-hover)', borderRadius: '4px', color: 'var(--text-muted)' }}>NSE</span>
+          </div>
+          <div style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
+            {COMPANY_NAMES[stock.symbol] || 'NIFTY 50 Constituent'}
           </div>
           <div style={{ fontSize: '2rem', fontWeight: 700, color: 'var(--text-main)', letterSpacing: '-0.02em' }}>
             {formatCurrency(stock.price)}
@@ -47,24 +61,49 @@ export const StockCard: React.FC<StockCardProps> = ({ stock, history, isMonitore
           </div>
         </div>
         
-        <button 
-          onClick={() => onToggleMonitor(stock.symbol)}
-          style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: '8px', 
-            padding: '8px 16px', 
-            borderRadius: '8px', 
-            border: `1px solid ${isMonitored ? 'var(--accent)' : 'var(--border)'}`,
-            background: isMonitored ? '#eff6ff' : 'transparent',
-            color: isMonitored ? 'var(--accent)' : 'var(--text-main)',
-            fontWeight: 500,
-            transition: 'all 0.2s'
-          }}
-        >
-          {isMonitored ? <BookmarkCheck size={18} /> : <Bookmark size={18} />}
-          {isMonitored ? 'Watching' : 'Watch'}
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button 
+            onClick={() => onToggleMonitor(stock.symbol)}
+            title={isMonitored ? "Remove from Watchlist" : "Add to Watchlist"}
+            style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '6px', 
+              padding: '8px 14px', 
+              borderRadius: '8px', 
+              border: `1px solid ${isMonitored ? 'var(--accent)' : 'var(--border)'}`,
+              background: isMonitored ? '#eff6ff' : 'transparent',
+              color: isMonitored ? 'var(--accent)' : 'var(--text-main)',
+              fontWeight: 500,
+              fontSize: '0.875rem',
+              transition: 'all 0.2s'
+            }}
+          >
+            {isMonitored ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}
+            {isMonitored ? 'Watching' : 'Watch'}
+          </button>
+
+          <button 
+            onClick={() => onToggleWaitlist(stock.symbol)}
+            title={isWaitlisted ? "Remove from Waitlist" : "Add to Waitlist"}
+            style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '6px', 
+              padding: '8px 14px', 
+              borderRadius: '8px', 
+              border: `1px solid ${isWaitlisted ? '#f59e0b' : 'var(--border)'}`,
+              background: isWaitlisted ? '#fef3c7' : 'transparent',
+              color: isWaitlisted ? '#b45309' : 'var(--text-main)',
+              fontWeight: 500,
+              fontSize: '0.875rem',
+              transition: 'all 0.2s'
+            }}
+          >
+            <Clock size={16} />
+            {isWaitlisted ? 'Waitlisted' : 'Waitlist'}
+          </button>
+        </div>
       </div>
 
       <div style={{ flex: 1, minHeight: '300px', width: '100%', position: 'relative' }}>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import type{ Stock, StockHistory } from '../types/api';
+import type { Stock, StockHistory } from '../types/api';
 import { fetchStocks, fetchStockHistory } from '../services/api';
 import { Header } from '../components/Header';
 import { MarketSummary } from '../components/MarketSummary';
@@ -7,15 +7,54 @@ import { StockCard } from '../components/StockCard';
 import { StockList } from '../components/StockList';
 import { StockAnalysis } from '../components/StockAnalysis';
 
+const WATCHLIST_STORAGE_KEY = 'stocksense_watchlist';
+const WAITLIST_STORAGE_KEY = 'stocksense_waitlist';
+
 export const Dashboard: React.FC = () => {
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [history, setHistory] = useState<StockHistory[]>([]);
-  const [monitoredStocks, setMonitoredStocks] = useState<Set<string>>(new Set());
   
+  // Watchlist & Waitlist backed by localStorage for client-side persistence
+  const [watchlist, setWatchlist] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem(WATCHLIST_STORAGE_KEY);
+      return stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
+    } catch {
+      return new Set<string>();
+    }
+  });
+
+  const [waitlist, setWaitlist] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem(WAITLIST_STORAGE_KEY);
+      return stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
+    } catch {
+      return new Set<string>();
+    }
+  });
+
   const [isLoadingStocks, setIsLoadingStocks] = useState(true);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Sync Watchlist to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(Array.from(watchlist)));
+    } catch (e) {
+      console.error('Failed to sync watchlist to localStorage', e);
+    }
+  }, [watchlist]);
+
+  // Sync Waitlist to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(WAITLIST_STORAGE_KEY, JSON.stringify(Array.from(waitlist)));
+    } catch (e) {
+      console.error('Failed to sync waitlist to localStorage', e);
+    }
+  }, [waitlist]);
 
   // Initial fetch of all stocks on mount
   useEffect(() => {
@@ -52,7 +91,7 @@ export const Dashboard: React.FC = () => {
         setHistory(data);
       } catch (err) {
         console.error('Failed to load history for', selectedSymbol, err);
-        // We don't set global error here to not break the whole UI
+        // Do not break the UI if individual history query fails
       } finally {
         setIsLoadingHistory(false);
       }
@@ -61,14 +100,92 @@ export const Dashboard: React.FC = () => {
     loadHistory();
   }, [selectedSymbol]);
 
-  const handleToggleMonitor = useCallback((symbol: string) => {
-    setMonitoredStocks(prev => {
+  // Toggle stock in Watchlist
+  const handleToggleWatchlist = useCallback((symbol: string) => {
+    setWatchlist(prev => {
       const next = new Set(prev);
       if (next.has(symbol)) {
         next.delete(symbol);
       } else {
         next.add(symbol);
+        // Automatically remove from waitlist if added to watchlist
+        setWaitlist(w => {
+          if (w.has(symbol)) {
+            const nextW = new Set(w);
+            nextW.delete(symbol);
+            return nextW;
+          }
+          return w;
+        });
       }
+      return next;
+    });
+  }, []);
+
+  // Toggle stock in Waitlist
+  const handleToggleWaitlist = useCallback((symbol: string) => {
+    setWaitlist(prev => {
+      const next = new Set(prev);
+      if (next.has(symbol)) {
+        next.delete(symbol);
+      } else {
+        next.add(symbol);
+        // Automatically remove from watchlist if added to waitlist
+        setWatchlist(w => {
+          if (w.has(symbol)) {
+            const nextW = new Set(w);
+            nextW.delete(symbol);
+            return nextW;
+          }
+          return w;
+        });
+      }
+      return next;
+    });
+  }, []);
+
+  // Move stock from Waitlist to Watchlist
+  const handleMoveToWatchlist = useCallback((symbol: string) => {
+    setWaitlist(prev => {
+      const next = new Set(prev);
+      next.delete(symbol);
+      return next;
+    });
+    setWatchlist(prev => {
+      const next = new Set(prev);
+      next.add(symbol);
+      return next;
+    });
+  }, []);
+
+  // Move stock from Watchlist to Waitlist
+  const handleMoveToWaitlist = useCallback((symbol: string) => {
+    setWatchlist(prev => {
+      const next = new Set(prev);
+      next.delete(symbol);
+      return next;
+    });
+    setWaitlist(prev => {
+      const next = new Set(prev);
+      next.add(symbol);
+      return next;
+    });
+  }, []);
+
+  // Remove from Watchlist
+  const handleRemoveFromWatchlist = useCallback((symbol: string) => {
+    setWatchlist(prev => {
+      const next = new Set(prev);
+      next.delete(symbol);
+      return next;
+    });
+  }, []);
+
+  // Remove from Waitlist
+  const handleRemoveFromWaitlist = useCallback((symbol: string) => {
+    setWaitlist(prev => {
+      const next = new Set(prev);
+      next.delete(symbol);
       return next;
     });
   }, []);
@@ -96,15 +213,20 @@ export const Dashboard: React.FC = () => {
 
   return (
     <div className="bento-grid">
-      <Header />
+      <Header 
+        stocks={stocks} 
+        onSelectStock={setSelectedSymbol} 
+      />
       
       <MarketSummary stocks={stocks} />
       
       <StockCard 
         stock={selectedStockData} 
         history={history} 
-        isMonitored={selectedSymbol ? monitoredStocks.has(selectedSymbol) : false}
-        onToggleMonitor={handleToggleMonitor}
+        isMonitored={selectedSymbol ? watchlist.has(selectedSymbol) : false}
+        isWaitlisted={selectedSymbol ? waitlist.has(selectedSymbol) : false}
+        onToggleMonitor={handleToggleWatchlist}
+        onToggleWaitlist={handleToggleWaitlist}
         isLoading={isLoadingHistory}
       />
       
@@ -112,7 +234,12 @@ export const Dashboard: React.FC = () => {
         stocks={stocks} 
         selectedSymbol={selectedSymbol} 
         onSelectStock={setSelectedSymbol}
-        monitoredStocks={monitoredStocks}
+        watchlist={watchlist}
+        waitlist={waitlist}
+        onMoveToWaitlist={handleMoveToWaitlist}
+        onMoveToWatchlist={handleMoveToWatchlist}
+        onRemoveFromWatchlist={handleRemoveFromWatchlist}
+        onRemoveFromWaitlist={handleRemoveFromWaitlist}
       />
       
       {selectedStockData && history.length > 0 && (

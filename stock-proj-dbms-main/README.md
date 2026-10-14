@@ -1,487 +1,206 @@
-# StockSense
+# StockSense — DBMS Mini-Project
 
-A stream-oriented stock market tracking and analysis platform developed as a DBMS mini-project. StockSense demonstrates an end-to-end data engineering and web application pipeline: ingesting streaming market quotes via Yahoo Finance, queuing trades through Redis Streams, persisting historical tick records in TimescaleDB (PostgreSQL 16), exposing data via a FastAPI REST API, and rendering an interactive dark-themed fintech dashboard with React and TypeScript.
-
----
-
-## Table of Contents
-
-- [Overview & Problem Statement](#overview--problem-statement)
-- [System Architecture & Data Flow](#system-architecture--data-flow)
-- [Key Features](#key-features)
-  - [Implemented Features](#implemented-features)
-  - [Planned Features](#planned-features)
-- [Technology Stack](#technology-stack)
-- [Repository Directory Structure](#repository-directory-structure)
-- [Prerequisites](#prerequisites)
-- [Getting Started](#getting-started)
-  - [1. Backend Setup (Docker Compose)](#1-backend-setup-docker-compose)
-  - [2. Frontend Setup (React + Vite)](#2-frontend-setup-react--vite)
-- [REST API Documentation](#rest-api-documentation)
-  - [GET /stocks](#get-stocks)
-  - [GET /stocks/{symbol}/history](#get-stockssymbolhistory)
-  - [Interactive Documentation](#interactive-documentation)
-- [Database Schema & Data Pipeline Details](#database-schema--data-pipeline-details)
-- [Configuration & Environment Variables](#configuration--environment-variables)
-- [Known Limitations & Design Disclosures](#known-limitations--design-disclosures)
-- [Future Enhancements](#future-enhancements)
-- [Troubleshooting](#troubleshooting)
+A stream-buffered stock market data pipeline and time-series analytical dashboard. StockSense demonstrates modern Database Management System (DBMS) principles: decoupling ingestion throughput from database writes via in-memory streaming, enforcing primary key constraints for idempotent ingestion, running distinct latest-value queries, and serving chronologically ordered time-series historical records.
 
 ---
 
-## Overview & Problem Statement
+## 1. Project Overview & DBMS Objectives
 
-Financial data systems require robust data engineering pipelines capable of ingesting high-frequency price updates, buffering burst traffic, persisting chronological time-series points, and serving low-latency queries to client applications without locking database tables or causing client-side rendering bottlenecks.
+In financial data architectures, high-frequency market updates can easily overwhelm transactional databases if written synchronously. StockSense demonstrates how to architect a resilient time-series ingestion and retrieval pipeline using:
 
-**StockSense** solves this architectural challenge in a mini-project scope by:
-1. Decoupling data ingestion from data storage using an in-memory stream buffer (Redis Streams).
-2. Persisting streaming tick data into a relational time-series database (TimescaleDB / PostgreSQL).
-3. Exposing structured REST endpoints for latest prices and chronological historical lookbacks via FastAPI.
-4. Visualizing market movements and summary analytics in a modern, responsive React interface.
+1. **In-Memory Stream Buffering (Redis Streams)**: Ingests tick data asynchronously without blocking or locking relational tables.
+2. **Relational Persistence (PostgreSQL 16 / TimescaleDB)**: Stores chronological trade records with strong type constraints and primary key indexing.
+3. **Optimized SQL Retrieval**: Exposes real-time snapshots (`DISTINCT ON`) and historical trend windows (`ORDER BY DESC LIMIT 100`) via a lightweight FastAPI REST layer.
+4. **Interactive Analytical Interface**: A React + TypeScript client providing dynamic stock search, technical trend metrics, and local watchlist/waitlist queue management.
 
 ---
 
-## System Architecture & Data Flow
+## 2. Architecture & Data Flow
 
 ```text
-  ┌────────────────────────────────────────────────────────┐
-  │                   External Market                      │
-  │                 Yahoo Finance API                      │
-  └───────────────────────────┬────────────────────────────┘
-                              │ Polled every 5 seconds
-                              ▼
-  ┌────────────────────────────────────────────────────────┐
-  │                 Python Producer Service                │
-  │  - Queries yfinance for 10 tracked NIFTY 50 tickers    │
-  │  - Appends trade payloads to Redis Stream ("trades")   │
-  └───────────────────────────┬────────────────────────────┘
-                              │ Redis XADD
-                              ▼
-  ┌────────────────────────────────────────────────────────┐
-  │               Redis Streams Message Broker             │
-  │  - In-memory event log / stream buffer: "trades"       │
-  │  - Millisecond-sequenced stream IDs (<time_ms>-<seq>)  │
-  └───────────────────────────┬────────────────────────────┘
-                              │ Redis XREAD (blocking)
-                              ▼
-  ┌────────────────────────────────────────────────────────┐
-  │                 Python Consumer Service                │
-  │  - Listens continuously for new stream events          │
-  │  - Batches / commits trade rows into PostgreSQL        │
-  └───────────────────────────┬────────────────────────────┘
-                              │ SQL INSERT
-                              ▼
-  ┌────────────────────────────────────────────────────────┐
-  │         PostgreSQL / TimescaleDB (Time-Series)         │
-  │  - Database: "postgres", Table: "trades"               │
-  │  - Stores primary key redis_id, symbol, price, volume  │
-  └───────────────────────────┬────────────────────────────┘
-                              │ SQL SELECT (DISTINCT / DESC)
-                              ▼
-  ┌────────────────────────────────────────────────────────┐
-  │                  FastAPI Backend Server                │
-  │  - Port 8000, CORS enabled for local frontend          │
-  │  - Endpoints: /stocks, /stocks/{symbol}/history        │
-  │  - Converts Redis stream IDs to ISO 8601 UTC timestamps│
-  └───────────────────────────┬────────────────────────────┘
-                              │ HTTP / JSON
-                              ▼
-  ┌────────────────────────────────────────────────────────┐
-  │            React + TypeScript Frontend Client          │
-  │  - Vite dev server at port 5173                        │
-  │  - Dark-mode fintech dashboard (Bento Grid layout)     │
-  │  - Recharts area chart, dynamic stats & asset selector │
-  └────────────────────────────────────────────────────────┘
+Yahoo Finance (yfinance API)
+       │
+       │ (Polls 10 NIFTY 50 quotes every 5s)
+       ▼
+Python Producer (`producer/producer.py`)
+       │
+       │ Redis XADD (Stream: "trades", Payload: symbol, price, volume)
+       ▼
+Redis Streams Broker (`stock-redis`, Port 6380:6379)
+       │
+       │ Redis XREAD (Blocking consumer loop)
+       ▼
+Python Consumer (`consumer/consumer.py`)
+       │
+       │ SQL INSERT with PRIMARY KEY constraint
+       ▼
+PostgreSQL / TimescaleDB (`stock-timescaledb`, Port 5433:5432)
+  [Database: postgres | Table: trades]
+       │
+       │ Parameterized SQL queries (DISTINCT ON, ORDER BY DESC LIMIT 100)
+       ▼
+FastAPI REST Server (`stock-api`, Port 8000:8000)
+       │
+       │ HTTP REST / JSON (CORS enabled)
+       ▼
+React + TypeScript Frontend Client (Vite Dev Server, Port 5173)
 ```
 
 ---
 
-## Key Features
+## 3. Technology Stack
 
-### Implemented Features
-
-- **Automated Market Ingestion**: Continual polling of 10 prominent Indian equities (NIFTY 50 constituents) via Yahoo Finance.
-- **Stream Buffering**: Asynchronous ingestion using Redis Streams (`XADD` / `XREAD`) to eliminate direct database write contention.
-- **Relational Time-Series Storage**: Automated table generation and transaction-safe insertion into PostgreSQL / TimescaleDB.
-- **Efficient Query API**:
-  - `GET /stocks`: Retrieves the most recent market price for all tracked equities using `DISTINCT ON (symbol)`.
-  - `GET /stocks/{symbol}/history`: Retrieves the 100 most recent records ordered chronologically (oldest to newest) for chart plotting.
-  - Parameterized queries to prevent SQL injection vulnerabilities.
-- **Fintech Dashboard Interface**:
-  - **Bento Grid Architecture**: Responsive layout with discrete summary, chart, asset list, and analysis modules.
-  - **Asset Selector**: Clean list showing current INR prices, last update timestamps, and active asset highlighting.
-  - **Dynamic Interactive Chart**: Area chart with gradient fill, crosshair tooltip, and automatic price-scale domain adjustment.
-  - **Real-Time Statistical Analysis**: Client-side calculation of rolling session High, Low, Dynamic Spread (volatility), and Net Session Direction based on loaded history.
-  - **Session Monitoring Toggles**: In-memory watch/flag state per asset within the dashboard session.
-
-### Planned Features
-
-The following capabilities are **not currently implemented** and represent roadmap items:
-- **Persistent User Accounts & Authentication**: JWT-based login, role-based access control, and user profile persistence.
-- **Persistent Watchlists & Portfolios**: Cloud-saved watchlists and multi-portfolio tracking across browser sessions.
-- **Configurable Price Alerts**: Webhook, email, or browser push notifications triggered by price threshold breaches.
-- **Exchange Order Placement**: Simulation or execution of limit/market buy and sell orders.
-- **News Integration & Sentiment Analysis**: Real-time financial headlines or sentiment scoring using natural language models.
-
----
-
-## Technology Stack
-
-| Layer | Technology | Version / Base | Role / Purpose |
+| Layer | Component | Version / Image | Purpose |
 | :--- | :--- | :--- | :--- |
-| **Ingestion Producer** | Python | `3.11-slim` | Fetches quotes via `yfinance` and pushes events to Redis Streams. |
-| **Message Broker** | Redis | `7-alpine` | In-memory stream message broker (`trades` stream) buffering trades. |
-| **Stream Consumer** | Python | `3.11-slim` | Consumes Redis stream entries and commits records to PostgreSQL. |
-| **Database** | TimescaleDB / PostgreSQL | `latest-pg16` | Relational time-series database storing historical trade records. |
-| **REST API Server** | FastAPI / Uvicorn | Python 3.11 / FastAPI | High-performance asynchronous HTTP REST API exposing DB records. |
-| **Frontend Framework** | React | `19.2` | Component-based reactive user interface. |
-| **Language & Tooling** | TypeScript & Vite | `TS ~6.0` / `Vite 8.3` | Strongly-typed frontend build toolchain with instant HMR. |
-| **Data Visualization** | Recharts | `3.10` | Declarative SVG charting library for rendering historical price trends. |
-| **Icons & Styling** | Lucide React & Vanilla CSS | `lucide 1.52` | Modern, dark-mode fintech aesthetics without third-party CSS overhead. |
-| **Orchestration** | Docker Compose | Compose v2 | Multi-container orchestration of Redis, TimescaleDB, Producer, Consumer, and API. |
+| **Ingestion Worker** | Python / yfinance | `python:3.11-slim` | Polls market prices and appends events to Redis Streams. |
+| **Message Broker** | Redis Streams | `redis:7-alpine` | In-memory stream buffer (`trades`) decoupling ingestion from DB writes. |
+| **Database Writer** | Python / psycopg2 | `python:3.11-slim` | Consumes Redis events and commits them into PostgreSQL. |
+| **DBMS Engine** | PostgreSQL / TimescaleDB | `timescale/timescaledb:latest-pg16` | Relational time-series database managing persistent trade tables. |
+| **Backend REST API** | FastAPI / Uvicorn | `python:3.11-slim` | Serves parameterized market queries and converts Redis IDs to ISO UTC. |
+| **Frontend UI** | React / TypeScript / Vite | `React 19` / `Vite 8.3` | Fintech dashboard with interactive search, chart, and list views. |
+| **Orchestration** | Docker Compose | Compose v2 | Coordinates container networking, storage volumes, and ports. |
 
 ---
 
-## Repository Directory Structure
+## 4. Actual Database Schema
 
-```text
-stock-proj-dbms-main/
-├── .env.example              # Template environment configuration file
-├── .gitignore                # Git ignore specifications (Python, node_modules, Docker)
-├── docker-compose.yml        # Orchestration for redis, timescaledb, producer, consumer, api
-├── LICENSE                   # Project license
-├── README.md                 # Project documentation
-│
-├── api/                      # FastAPI REST Backend Service
-│   ├── Dockerfile            # Container build recipe for FastAPI API server
-│   ├── main.py               # FastAPI application, database pool, and REST endpoints
-│   └── requirements.txt      # Python dependencies: fastapi, uvicorn, psycopg2-binary
-│
-├── consumer/                 # Redis Stream to PostgreSQL Consumer Service
-│   ├── consumer.py           # Stream listener, table DDL creation, and database writer
-│   ├── Dockerfile            # Container build recipe for stream consumer
-│   └── requirements.txt      # Python dependencies: redis, psycopg2-binary
-│
-├── db/                       # Database Initialization Artifacts
-│   └── init.sql              # Initialization SQL script mounted into TimescaleDB container
-│
-├── frontend/                 # React + TypeScript + Vite Dashboard Client
-│   ├── index.html            # Vite entry HTML document
-│   ├── package.json          # Node dependencies, scripts (dev, build, lint, preview)
-│   ├── tsconfig.json         # Base TypeScript configuration
-│   ├── tsconfig.app.json     # Application-specific TypeScript compiler options
-│   ├── tsconfig.node.json    # Vite Node-environment TypeScript configuration
-│   ├── vite.config.ts        # Vite build tool configuration
-│   └── src/
-│       ├── App.tsx           # Top-level application component
-│       ├── main.tsx          # React application root DOM mount
-│       ├── index.css         # Custom dark-theme fintech CSS design system
-│       ├── components/       # Modular dashboard UI components
-│       │   ├── Header.tsx        # System branding and operational status indicator
-│       │   ├── MarketSummary.tsx # Active tracking metrics and system health card
-│       │   ├── StockAnalysis.tsx # High/Low/Spread/Trend computed analytics card
-│       │   ├── StockCard.tsx     # Primary selected asset view and Recharts area graph
-│       │   └── StockList.tsx     # Scrollable tracked assets list with active selection
-│       ├── pages/
-│       │   └── Dashboard.tsx     # Main dashboard view orchestrating data loading effects
-│       ├── services/
-│       │   └── api.ts            # Client HTTP service communicating with FastAPI endpoints
-│       └── types/
-│           └── api.ts            # TypeScript interfaces for Stock and StockHistory models
-│
-└── producer/                 # Market Data Poller and Redis Producer Service
-    ├── Dockerfile            # Container build recipe for producer worker
-    ├── producer.py           # Polling loop fetching Yahoo Finance prices into Redis stream
-    ├── requirements.txt      # Python dependencies: redis, yfinance
-    └── symbols.py            # Constituent tracked stock ticker list (NIFTY 50 subset)
+Inspection of the live PostgreSQL database (`psql \d+ trades` and `\dt`) verifies that **exactly one application table exists**:
+
+### Table: `public.trades`
+
+```sql
+CREATE TABLE IF NOT EXISTS public.trades (
+    redis_id VARCHAR(30) PRIMARY KEY,
+    symbol   VARCHAR(20),
+    price    NUMERIC(10,2),
+    volume   INTEGER
+);
+```
+
+### Column Specifications & Constraints
+
+| Column Name | PostgreSQL Data Type | Nullable | Constraints & Indexing | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `redis_id` | `character varying(30)` | **NOT NULL** | **PRIMARY KEY** (`trades_pkey`, btree) | Unique Redis Stream ID (`<epoch_ms>-<seq>`), used as immutable time-order key. |
+| `symbol` | `character varying(20)` | YES | None | Stock ticker (e.g., `RELIANCE.NS`, `TCS.NS`). |
+| `price` | `numeric(10,2)` | YES | None | Trade price in INR with 2 decimal precision. |
+| `volume` | `integer` | YES | None | Number of shares associated with tick (currently fixed at 100). |
+
+### Schema Disclosures
+- **No Foreign Keys**: `trades` is a standalone table.
+- **Missing Relational Tables**: There are currently **no** database tables for `users`, `watchlists`, `waitlists`, `portfolios`, or `alerts`. Watchlist and Waitlist states are maintained client-side in browser storage.
+
+---
+
+## 5. DBMS Concepts Demonstrated
+
+1. **Stream Decoupling & Backpressure Mitigation**: Rather than writing directly to PostgreSQL on every external API fetch, trades are queued in Redis Streams (`trades`). If PostgreSQL experiences lock contention or restarts, Redis buffers incoming ticks without losing data.
+2. **Idempotent Ingestion via Primary Key**: The `redis_id` generated by Redis (e.g., `1791993976437-0`) acts as the natural primary key. Duplicate consumer processing of the same stream event is prevented by PostgreSQL's unique btree index (`trades_pkey`).
+3. **Time-Series Timestamp Derivation**: Milliseconds stored in `redis_id` are converted directly into ISO 8601 UTC timestamps by the API (`datetime.fromtimestamp(ms / 1000.0)`), avoiding redundant timestamp storage columns.
+4. **Optimized Aggregations & Query Plans**:
+   - **Latest Price Snapshot (`/stocks`)**:
+     ```sql
+     SELECT DISTINCT ON (symbol) symbol, price, volume, redis_id 
+     FROM trades 
+     ORDER BY symbol, redis_id DESC;
+     ```
+     Utilizes PostgreSQL's `DISTINCT ON` to scan the latest entry per symbol efficiently.
+   - **Chronological History Slice (`/stocks/{symbol}/history`)**:
+     ```sql
+     SELECT price, volume, redis_id 
+     FROM trades 
+     WHERE symbol = %s 
+     ORDER BY redis_id DESC 
+     LIMIT 100;
+     ```
+     Fetches the most recent 100 points via indexed reverse scan, which the API reverses in memory (`rows.reverse()`) to stream ascending chronological data to the chart.
+
+---
+
+## 6. Setup & Execution Guide
+
+### Prerequisites
+- Docker Desktop (with WSL 2 enabled on Windows)
+- Node.js (v18+) and npm (v9+)
+
+### 1. Launch Backend (Docker Compose)
+From the project root:
+```bash
+docker compose up -d --build
+```
+
+Verify that all 5 services are running:
+```bash
+docker compose ps
+```
+- `stock-redis`: Port `6380:6379`
+- `stock-timescaledb`: Port `5433:5432`
+- `stock-producer`: Streaming worker
+- `stock-consumer`: DB writer worker
+- `stock-api`: Port `8000:8000`
+
+### 2. Launch Frontend (React + Vite)
+```bash
+cd frontend
+npm install
+npm run dev
+```
+Open **`http://localhost:5173`** in your browser.
+
+To verify frontend builds and linting:
+```bash
+npm run lint     # oxlint static analysis (0 warnings, 0 errors)
+npm run build    # TypeScript compiler check (tsc -b) & Vite production bundle
 ```
 
 ---
 
-## Prerequisites
+## 7. REST API Documentation
 
-Before running the application, ensure the following software is installed on your workstation:
+Base URL: `http://localhost:8000` (Swagger UI: `http://localhost:8000/docs`)
 
-1. **Docker Desktop**:
-   - On Windows: Docker Desktop with the **WSL 2 backend enabled** (Ubuntu or default WSL 2 distro).
-   - Ensure Docker service is running (`docker --version` and `docker compose version`).
-2. **Node.js & npm**:
-   - Node.js version `18.x` or higher (`node -v`).
-   - npm version `9.x` or higher (`npm -v`).
-3. **Web Browser**: Any modern evergreen browser (Chrome, Edge, Firefox, Brave) supporting ES2020+.
-
----
-
-## Getting Started
-
-### 1. Backend Setup (Docker Compose)
-
-The entire backend pipeline—including Redis, TimescaleDB, the market producer, the stream consumer, and the FastAPI service—is containerized.
-
-1. Open a terminal in the project directory:
-   ```bash
-   cd stock-proj-dbms-main
-   ```
-
-2. Start all backend services in detached mode:
-   ```bash
-   docker compose up -d --build
-   ```
-
-3. Verify that all 5 containers are running:
-   ```bash
-   docker compose ps
-   ```
-
-   You should observe 5 healthy/running containers:
-   - `stock-redis` (Ports: `6380->6379`)
-   - `stock-timescaledb` (Ports: `5433->5432`)
-   - `stock-producer` (Up)
-   - `stock-consumer` (Up)
-   - `stock-api` (Ports: `8000->8000`)
-
-4. Inspect the streaming pipeline logs:
-   ```bash
-   # View producer polling activity:
-   docker logs -f stock-producer
-
-   # View consumer database write activity:
-   docker logs -f stock-consumer
-
-   # View REST API server requests:
-   docker logs -f stock-api
-   ```
-
----
-
-### 2. Frontend Setup (React + Vite)
-
-The frontend is run locally using Vite for hot module replacement during development.
-
-1. Navigate to the `frontend` directory:
-   ```bash
-   cd frontend
-   ```
-
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-3. Start the Vite development server:
-   ```bash
-   npm run dev
-   ```
-
-4. Access the web dashboard by navigating to:
-   ```text
-   http://localhost:5173
-   ```
-
-5. (Optional) Run TypeScript checks, linting, and production builds:
-   ```bash
-   npm run lint     # Runs oxlint static analysis
-   npm run build    # Compiles TypeScript (tsc -b) and bundles production assets via Vite
-   npm run preview  # Previews the compiled production bundle locally
-   ```
-
----
-
-## REST API Documentation
-
-The FastAPI service listens on `http://localhost:8000`. Cross-Origin Resource Sharing (CORS) is pre-configured to accept requests from `http://localhost:5173`.
-
-### GET /stocks
-
-Returns the most recently recorded market price, volume, and timestamp for all distinct tracked stock symbols.
-
-- **URL**: `http://localhost:8000/stocks`
-- **Method**: `GET`
-- **Headers**: `Accept: application/json`
-- **Query Parameters**: None
-
-#### Representative Response (`200 OK`)
+### `GET /stocks`
+Returns the latest recorded price, volume, and timestamp for all tracked stocks.
 ```json
 [
   {
-    "symbol": "BHARTIARTL.NS",
-    "price": 1891.0,
-    "volume": 100,
-    "timestamp": "2026-10-14T16:06:16.437000+00:00"
-  },
-  {
-    "symbol": "HDFCBANK.NS",
-    "price": 1690.4,
-    "volume": 100,
-    "timestamp": "2026-10-14T16:06:14.200000+00:00"
-  },
-  {
     "symbol": "RELIANCE.NS",
-    "price": 1174.6,
+    "price": 1174.60,
     "volume": 100,
     "timestamp": "2026-10-14T16:06:16.437000+00:00"
   },
   {
     "symbol": "TCS.NS",
-    "price": 2845.5,
+    "price": 2845.50,
     "volume": 100,
     "timestamp": "2026-10-14T16:06:15.110000+00:00"
   }
 ]
 ```
 
----
-
-### GET /stocks/{symbol}/history
-
-Retrieves the 100 most recent tick records for the specified stock symbol, returned in **ascending chronological order (oldest to newest)** so that charting libraries plot sequentially from left to right.
-
-- **URL**: `http://localhost:8000/stocks/{symbol}/history`
-- **Method**: `GET`
-- **Path Parameter**: `symbol` (e.g., `RELIANCE.NS`, `TCS.NS`, `INFY.NS`)
-
-#### Example Request
-```bash
-curl -s http://localhost:8000/stocks/RELIANCE.NS/history
-```
-
-#### Representative Response (`200 OK`)
-```json
-[
-  {
-    "price": 1174.6,
-    "volume": 100,
-    "timestamp": "2026-10-14T15:56:20.084000+00:00"
-  },
-  {
-    "price": 1174.6,
-    "volume": 100,
-    "timestamp": "2026-10-14T15:56:26.625000+00:00"
-  },
-  {
-    "price": 1174.6,
-    "volume": 100,
-    "timestamp": "2026-10-14T16:06:16.437000+00:00"
-  }
-]
-```
-
-#### Error Response (`404 Not Found`)
-If the requested symbol does not exist or has not accumulated records:
-```json
-{
-  "detail": "No historical records found for symbol NONEXISTENT.NS"
-}
-```
+### `GET /stocks/{symbol}/history`
+Returns up to 100 latest records for `{symbol}` in chronological order (oldest to newest).
+- **Success (`200 OK`)**: Array of `[{"price": float, "volume": int, "timestamp": string}, ...]`
+- **Error (`404 Not Found`)**: `{"detail": "No historical records found for symbol <symbol>"}`
 
 ---
 
-### Interactive Documentation
+## 8. Disclosures & Known Limitations
 
-FastAPI automatically serves interactive API specifications. Once the backend container is running:
-- **Swagger UI**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **ReDoc UI**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
-
----
-
-## Database Schema & Data Pipeline Details
-
-### PostgreSQL Schema Definition
-
-The table `trades` is initialized dynamically upon startup by the consumer service (`consumer/consumer.py`):
-
-```sql
-CREATE TABLE IF NOT EXISTS trades (
-    redis_id VARCHAR(30) PRIMARY KEY,
-    symbol   VARCHAR(10),
-    price    DECIMAL(10,2),
-    volume   INT
-);
-```
-
-#### Schema Fields Explained:
-- `redis_id` (`VARCHAR(30)`): Primary key formatted as `<timestamp_ms>-<sequence>` (e.g., `1791993976437-0`). Assigned deterministically by Redis when the producer executes `XADD`. Because the prefix is the exact epoch millisecond when Redis buffered the trade, the API parses this string to construct standardized ISO 8601 UTC timestamps without needing an additional timestamp column.
-- `symbol` (`VARCHAR(10)`): The equity ticker symbol (e.g., `RELIANCE.NS`, `TCS.NS`).
-- `price` (`DECIMAL(10,2)`): Latest recorded price in Indian Rupees (INR) with two decimal precision.
-- `volume` (`INT`): Transaction volume associated with the price tick (currently fixed at 100 by the producer).
-
-### TimescaleDB Container Details
-The container runs the official image `timescale/timescaledb:latest-pg16`. Data is persisted on the Docker host using the named volume `postgres-data`.
+1. **Volume Value**: The producer (`producer/producer.py`) currently records a fixed value (`"volume": "100"`). Real tick volume is not fetched from Yahoo Finance.
+2. **Market Feed Polling**: Prices are polled every 5 seconds from Yahoo Finance (`fast_info["lastPrice"]`). It is not an exchange-grade tick feed, and update frequency is bounded by market operating hours and Yahoo Finance's internal caching.
+3. **Storage Limitation for Watchlist & Waitlist**: Watchlist and Waitlist states are stored in browser `localStorage` (`stocksense_watchlist` and `stocksense_waitlist`). **They are not currently persisted in PostgreSQL tables.**
+4. **Fixed Tracked Equities**: Only 10 NIFTY 50 equities are configured in `producer/symbols.py`.
 
 ---
 
-## Configuration & Environment Variables
+## 9. Future DBMS Enhancements
 
-### Docker Network Port Allocations
-
-| Service | Internal Container Port | Host Port | Purpose |
-| :--- | :--- | :--- | :--- |
-| **stock-redis** | `6379` | `6380` | Redis Streams message broker (mapped to 6380 on host to avoid local Redis conflicts). |
-| **stock-timescaledb** | `5432` | `5433` | PostgreSQL/TimescaleDB (mapped to 5433 on host to avoid local PostgreSQL conflicts). |
-| **stock-api** | `8000` | `8000` | FastAPI HTTP REST server. |
-| **frontend** | `5173` | `5173` | Vite local development server. |
-
-### Environment Variables
-
-Environment variables are passed to the containers in `docker-compose.yml`:
-
-```env
-# Database Credentials
-POSTGRES_USER=admin
-POSTGRES_PASSWORD=qwerty
-POSTGRES_DB=postgres
-
-# API Connection Settings (api container)
-POSTGRES_HOST=timescaledb
-POSTGRES_PORT=5432
-```
-
----
-
-## Known Limitations & Design Disclosures
-
-1. **Static Volume Field**: The ingestion producer (`producer/producer.py`) currently inserts a static volume value of `"100"` for every trade event (`"volume": "100"`). Real-time exchange volume per tick is not currently queried from the Yahoo Finance ticker object.
-2. **Polling Frequency vs. Market Updates**: Data is fetched by polling Yahoo Finance (`yfinance.Ticker.fast_info["lastPrice"]`) at a 5-second interval. This service **does not provide exchange-grade, sub-second tick-level market feeds**. Quote updates depend on Yahoo Finance server-side cache refresh rates and whether Indian equity markets (NSE/BSE) are currently open (09:15 to 15:30 IST). Polling every 5 seconds does not guarantee a new market trade price every cycle.
-3. **Fixed Asset Portfolio**: The tracked universe is configured in `producer/symbols.py` and consists of 10 equities: `RELIANCE.NS`, `TCS.NS`, `HDFCBANK.NS`, `ICICIBANK.NS`, `INFY.NS`, `BHARTIARTL.NS`, `SBIN.NS`, `LT.NS`, `HINDUNILVR.NS`, and `ITC.NS`.
-4. **Session-Level Monitoring**: Toggling the monitor button (star icon) on an asset marks it visually within the current React session state, but does not persist to a backend database or user profile.
-5. **Single Consumer**: The consumer service listens to the stream sequentially from an offset (`xread`); consumer group partitioning (`xreadgroup`) is not yet configured.
-
----
-
-## Future Enhancements
-
-- **Hypertable Optimization**: Convert the `trades` table into a native TimescaleDB hypertable partitioned by time chunks to optimize high-volume queries.
-- **WebSocket Streaming**: Introduce a WebSocket endpoint in FastAPI to broadcast trades to the React frontend in real-time without client polling.
-- **Consumer Group Scaling**: Transition from single-worker `xread` to Redis consumer groups (`XGROUP`) for horizontal consumer scalability.
-- **Dynamic Watchlist Management**: Allow users to search, add, and remove NSE/BSE ticker symbols dynamically through the API.
-- **User Authentication**: Implement user registration and JWT authentication for personal portfolio tracking.
-
----
-
-## Troubleshooting
-
-### 1. Port Conflicts on Windows / macOS
-- **Problem**: Error starting containers: `Bind for 0.0.0.0:5433 failed: port is already allocated` or similar for `6380` / `8000`.
-- **Solution**: Check if a local PostgreSQL or Redis instance is running locally on your system, or update host ports in `docker-compose.yml` (e.g., change `"5433:5432"` to `"5434:5432"`).
-
-### 2. Frontend Shows "Connection Error: Failed to load market data"
-- **Problem**: The React dashboard displays the red connection error card.
-- **Solution**:
-  1. Confirm the API container is running: `docker compose ps`
-  2. Verify that `http://localhost:8000/stocks` returns JSON in your browser or via curl:
-     ```bash
-     curl http://localhost:8000/stocks
-     ```
-  3. If newly started, allow 15–20 seconds for the producer and consumer to write initial records to the database.
-
-### 3. Database Initializing or Waiting for Trades
-- **Problem**: `/stocks` returns an empty array `[]`.
-- **Solution**: The producer may still be performing its first poll loop. Run `docker compose logs -f producer` to confirm trades are being pushed to Redis.
-
-### 4. Docker Desktop WSL 2 Issues (Windows)
-- **Problem**: `docker` commands hang or return `error during connect: This error may indicate that the docker daemon is not running.`
-- **Solution**:
-  1. Open Docker Desktop settings.
-  2. Ensure "Use the WSL 2 based engine" is enabled under **General**.
-  3. Under **Resources > WSL Integration**, verify that your default WSL distribution is turned on.
-  4. Restart Docker Desktop.
+- **TimescaleDB Hypertables**: Convert `trades` into a partitioned hypertable (`create_hypertable('trades', 'time_column')`) to improve multi-million row query performance.
+- **Relational User & Watchlist Schema**:
+  ```sql
+  CREATE TABLE users (user_id UUID PRIMARY KEY, email VARCHAR(255) UNIQUE);
+  CREATE TABLE watchlists (user_id UUID REFERENCES users(user_id), symbol VARCHAR(20), PRIMARY KEY(user_id, symbol));
+  CREATE TABLE waitlists (user_id UUID REFERENCES users(user_id), symbol VARCHAR(20), PRIMARY KEY(user_id, symbol));
+  ```
+- **Composite B-Tree Indexes**: Add composite index `CREATE INDEX idx_trades_symbol_redis_id ON trades(symbol, redis_id DESC);` to accelerate history queries.
