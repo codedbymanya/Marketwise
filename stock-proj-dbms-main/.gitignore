@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Environment
+.env
+
+# VS Code
+.vscode/
+
+# dbt
+dbt_packages/
+target/
+
+# OS
+.DS_Store
+Thumbs.db

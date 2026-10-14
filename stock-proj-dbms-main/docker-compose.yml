@@ -1,0 +1,51 @@
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: stock-redis
+    ports:
+      - "6380:6379"
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: stock-timescaledb
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=qwerty
+      - POSTGRES_DB=postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  producer:
+    build: ./producer
+    container_name: stock-producer  
+    depends_on:
+      - redis
+
+  consumer:
+    build: ./consumer
+    container_name: stock-consumer
+    depends_on:
+      - redis
+      - timescaledb
+
+  api:
+    build: ./api
+    container_name: stock-api
+    ports:
+      - "8000:8000"
+    depends_on:
+      - timescaledb
+    environment:
+      - POSTGRES_HOST=timescaledb
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=qwerty
+      - POSTGRES_DB=postgres
+
+volumes:
+  postgres-data:
+
+
