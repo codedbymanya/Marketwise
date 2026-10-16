@@ -1,20 +1,31 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { Stock, StockHistory } from '../types/api';
+import type { User } from '../types/auth';
 import { fetchStocks, fetchStockHistory } from '../services/api';
+import { fetchCurrentUser } from '../services/authApi';
 import { Header } from '../components/Header';
 import { MarketSummary } from '../components/MarketSummary';
 import { StockCard } from '../components/StockCard';
 import { StockList } from '../components/StockList';
 import { StockAnalysis } from '../components/StockAnalysis';
+import { PortfolioView } from '../components/PortfolioView';
+import { AuthModal } from '../components/AuthModal';
 
 const WATCHLIST_STORAGE_KEY = 'stocksense_watchlist';
 const WAITLIST_STORAGE_KEY = 'stocksense_waitlist';
+const TOKEN_STORAGE_KEY = 'stocksense_token';
 
 export const Dashboard: React.FC = () => {
+  const [activeView, setActiveView] = useState<'dashboard' | 'portfolio'>('dashboard');
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [history, setHistory] = useState<StockHistory[]>([]);
   
+  // Authentication state
+  const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_STORAGE_KEY));
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+
   // Watchlist & Waitlist backed by localStorage for client-side persistence
   const [watchlist, setWatchlist] = useState<Set<string>>(() => {
     try {
@@ -37,6 +48,23 @@ export const Dashboard: React.FC = () => {
   const [isLoadingStocks, setIsLoadingStocks] = useState(true);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Validate authenticated session on load
+  useEffect(() => {
+    const verifySession = async () => {
+      if (!token) return;
+      try {
+        const profile = await fetchCurrentUser(token);
+        setUser(profile);
+      } catch {
+        // Token invalid or expired
+        localStorage.removeItem(TOKEN_STORAGE_KEY);
+        setToken(null);
+        setUser(null);
+      }
+    };
+    verifySession();
+  }, [token]);
 
   // Sync Watchlist to localStorage
   useEffect(() => {
@@ -91,7 +119,6 @@ export const Dashboard: React.FC = () => {
         setHistory(data);
       } catch (err) {
         console.error('Failed to load history for', selectedSymbol, err);
-        // Do not break the UI if individual history query fails
       } finally {
         setIsLoadingHistory(false);
       }
@@ -100,7 +127,20 @@ export const Dashboard: React.FC = () => {
     loadHistory();
   }, [selectedSymbol]);
 
-  // Toggle stock in Watchlist
+  // Auth Handlers
+  const handleAuthSuccess = (newToken: string, authenticatedUser: User) => {
+    localStorage.setItem(TOKEN_STORAGE_KEY, newToken);
+    setToken(newToken);
+    setUser(authenticatedUser);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    setToken(null);
+    setUser(null);
+  };
+
+  // Watchlist & Waitlist toggles
   const handleToggleWatchlist = useCallback((symbol: string) => {
     setWatchlist(prev => {
       const next = new Set(prev);
@@ -108,7 +148,6 @@ export const Dashboard: React.FC = () => {
         next.delete(symbol);
       } else {
         next.add(symbol);
-        // Automatically remove from waitlist if added to watchlist
         setWaitlist(w => {
           if (w.has(symbol)) {
             const nextW = new Set(w);
@@ -122,7 +161,6 @@ export const Dashboard: React.FC = () => {
     });
   }, []);
 
-  // Toggle stock in Waitlist
   const handleToggleWaitlist = useCallback((symbol: string) => {
     setWaitlist(prev => {
       const next = new Set(prev);
@@ -130,7 +168,6 @@ export const Dashboard: React.FC = () => {
         next.delete(symbol);
       } else {
         next.add(symbol);
-        // Automatically remove from watchlist if added to waitlist
         setWatchlist(w => {
           if (w.has(symbol)) {
             const nextW = new Set(w);
@@ -144,7 +181,6 @@ export const Dashboard: React.FC = () => {
     });
   }, []);
 
-  // Move stock from Waitlist to Watchlist
   const handleMoveToWatchlist = useCallback((symbol: string) => {
     setWaitlist(prev => {
       const next = new Set(prev);
@@ -158,7 +194,6 @@ export const Dashboard: React.FC = () => {
     });
   }, []);
 
-  // Move stock from Watchlist to Waitlist
   const handleMoveToWaitlist = useCallback((symbol: string) => {
     setWatchlist(prev => {
       const next = new Set(prev);
@@ -172,7 +207,6 @@ export const Dashboard: React.FC = () => {
     });
   }, []);
 
-  // Remove from Watchlist
   const handleRemoveFromWatchlist = useCallback((symbol: string) => {
     setWatchlist(prev => {
       const next = new Set(prev);
@@ -181,7 +215,6 @@ export const Dashboard: React.FC = () => {
     });
   }, []);
 
-  // Remove from Waitlist
   const handleRemoveFromWaitlist = useCallback((symbol: string) => {
     setWaitlist(prev => {
       const next = new Set(prev);
@@ -212,39 +245,63 @@ export const Dashboard: React.FC = () => {
   }
 
   return (
-    <div className="bento-grid">
-      <Header 
-        stocks={stocks} 
-        onSelectStock={setSelectedSymbol} 
+    <div style={{ minHeight: '100vh', padding: '24px' }}>
+      <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <Header 
+          stocks={stocks} 
+          onSelectStock={setSelectedSymbol}
+          activeView={activeView}
+          onSelectView={setActiveView}
+          user={user}
+          onOpenAuthModal={() => setIsAuthModalOpen(true)}
+          onLogout={handleLogout}
+        />
+        
+        {activeView === 'dashboard' ? (
+          <div className="bento-grid" style={{ padding: 0, margin: 0, maxWidth: '100%' }}>
+            <MarketSummary stocks={stocks} />
+            
+            <StockCard 
+              stock={selectedStockData} 
+              history={history} 
+              isMonitored={selectedSymbol ? watchlist.has(selectedSymbol) : false}
+              isWaitlisted={selectedSymbol ? waitlist.has(selectedSymbol) : false}
+              onToggleMonitor={handleToggleWatchlist}
+              onToggleWaitlist={handleToggleWaitlist}
+              isLoading={isLoadingHistory}
+            />
+            
+            <StockList 
+              stocks={stocks} 
+              selectedSymbol={selectedSymbol} 
+              onSelectStock={setSelectedSymbol}
+              watchlist={watchlist}
+              waitlist={waitlist}
+              onMoveToWaitlist={handleMoveToWaitlist}
+              onMoveToWatchlist={handleMoveToWatchlist}
+              onRemoveFromWatchlist={handleRemoveFromWatchlist}
+              onRemoveFromWaitlist={handleRemoveFromWaitlist}
+            />
+            
+            {selectedStockData && history.length > 0 && (
+              <StockAnalysis history={history} />
+            )}
+          </div>
+        ) : (
+          <PortfolioView
+            token={token}
+            user={user}
+            stocks={stocks}
+            onOpenAuthModal={() => setIsAuthModalOpen(true)}
+          />
+        )}
+      </div>
+
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        onAuthSuccess={handleAuthSuccess}
       />
-      
-      <MarketSummary stocks={stocks} />
-      
-      <StockCard 
-        stock={selectedStockData} 
-        history={history} 
-        isMonitored={selectedSymbol ? watchlist.has(selectedSymbol) : false}
-        isWaitlisted={selectedSymbol ? waitlist.has(selectedSymbol) : false}
-        onToggleMonitor={handleToggleWatchlist}
-        onToggleWaitlist={handleToggleWaitlist}
-        isLoading={isLoadingHistory}
-      />
-      
-      <StockList 
-        stocks={stocks} 
-        selectedSymbol={selectedSymbol} 
-        onSelectStock={setSelectedSymbol}
-        watchlist={watchlist}
-        waitlist={waitlist}
-        onMoveToWaitlist={handleMoveToWaitlist}
-        onMoveToWatchlist={handleMoveToWatchlist}
-        onRemoveFromWatchlist={handleRemoveFromWatchlist}
-        onRemoveFromWaitlist={handleRemoveFromWaitlist}
-      />
-      
-      {selectedStockData && history.length > 0 && (
-        <StockAnalysis history={history} />
-      )}
     </div>
   );
 };

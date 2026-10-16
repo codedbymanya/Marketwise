@@ -31,8 +31,11 @@ conn.commit()
 
 print("Consumer started. Waiting for trades...")
 
-# Start reading from the beginning of the stream
-last_id = "0-0"
+# Start reading from the latest recorded trade or beginning of the stream
+cursor.execute("SELECT redis_id FROM trades ORDER BY redis_id DESC LIMIT 1;")
+latest_trade = cursor.fetchone()
+last_id = latest_trade[0] if latest_trade else "0-0"
+print(f"Resuming consumer from stream ID: {last_id}")
 
 while True:
     # Wait until a new message is available
@@ -54,6 +57,7 @@ while True:
                 """
                 INSERT INTO trades (redis_id, symbol, price, volume)
                 VALUES (%s, %s, %s, %s)
+                ON CONFLICT (redis_id) DO NOTHING
                 """,
                 (
                     message_id,

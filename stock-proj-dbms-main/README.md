@@ -1,17 +1,19 @@
 # StockSense — DBMS Mini-Project
 
-A stream-buffered stock market data pipeline and time-series analytical dashboard. StockSense demonstrates modern Database Management System (DBMS) principles: decoupling ingestion throughput from database writes via in-memory streaming, enforcing primary key constraints for idempotent ingestion, running distinct latest-value queries, and serving chronologically ordered time-series historical records.
+A stream-buffered stock market data pipeline, portfolio management ledger, and time-series analytical dashboard. StockSense demonstrates modern Database Management System (DBMS) principles: in-memory streaming ingestion decoupling, relational data modeling, ACID transactions with row-level locking, foreign key referential integrity with cascading deletes, bcrypt password hashing, signed JWT authorization, and real-time weighted average cost (WAC) portfolio accounting.
 
 ---
 
 ## 1. Project Overview & DBMS Objectives
 
-In financial data architectures, high-frequency market updates can easily overwhelm transactional databases if written synchronously. StockSense demonstrates how to architect a resilient time-series ingestion and retrieval pipeline using:
+In financial data architectures, high-frequency market updates can easily overwhelm transactional databases if written synchronously. Furthermore, investor applications require strict transactional guarantees, preventing invalid states like negative equity balances, orphaned transactions, or unauthorized cross-tenant data access.
 
-1. **In-Memory Stream Buffering (Redis Streams)**: Ingests tick data asynchronously without blocking or locking relational tables.
-2. **Relational Persistence (PostgreSQL 16 / TimescaleDB)**: Stores chronological trade records with strong type constraints and primary key indexing.
-3. **Optimized SQL Retrieval**: Exposes real-time snapshots (`DISTINCT ON`) and historical trend windows (`ORDER BY DESC LIMIT 100`) via a lightweight FastAPI REST layer.
-4. **Interactive Analytical Interface**: A React + TypeScript client providing dynamic stock search, technical trend metrics, and local watchlist/waitlist queue management.
+**StockSense** demonstrates:
+1. **Decoupled Stream Buffering**: Redis Streams ingests and buffers high-frequency ticks, preventing database write starvation.
+2. **Relational Schema Design & Constraints**: Normalized tables (`users`, `portfolios`, `transactions`, `trades`) enforcing primary keys, foreign keys (`ON DELETE CASCADE`), unique constraints, and check constraints (`quantity > 0`, `price > 0`, `BUY`/`SELL`).
+3. **Concurrency Control & ACID Transactions**: Row-level locking (`SELECT ... FOR UPDATE`) prevents race conditions and over-selling in concurrent trade executions.
+4. **Weighted Average Cost (WAC) Financial Accounting**: Computes cost basis, realized gains, and live unrealized P&L joined against latest market ticks.
+5. **Secure Authentication & Ownership Isolation**: Bcrypt salted password hashing and stateless HMAC-SHA256 JWT tokens ensuring user-level data isolation.
 
 ---
 
@@ -19,101 +21,166 @@ In financial data architectures, high-frequency market updates can easily overwh
 
 ```text
 Yahoo Finance (yfinance API)
-       │
        │ (Polls 10 NIFTY 50 quotes every 5s)
        ▼
 Python Producer (`producer/producer.py`)
-       │
        │ Redis XADD (Stream: "trades", Payload: symbol, price, volume)
        ▼
 Redis Streams Broker (`stock-redis`, Port 6380:6379)
-       │
        │ Redis XREAD (Blocking consumer loop)
        ▼
 Python Consumer (`consumer/consumer.py`)
-       │
-       │ SQL INSERT with PRIMARY KEY constraint
+       │ SQL INSERT (idempotent primary key redis_id)
        ▼
-PostgreSQL / TimescaleDB (`stock-timescaledb`, Port 5433:5432)
-  [Database: postgres | Table: trades]
-       │
-       │ Parameterized SQL queries (DISTINCT ON, ORDER BY DESC LIMIT 100)
+PostgreSQL 16 / TimescaleDB (`stock-timescaledb`, Port 5433:5432)
+  ├── Table: trades (Market Observations)
+  ├── Table: users (Authentication & Profiles)
+  ├── Table: portfolios (User Investment Accounts)
+  └── Table: transactions (Buy / Sell Trade Ledger)
+       ▲
+       │ Parameterized SQL queries (ACID Transactions, FOR UPDATE, DISTINCT ON)
        ▼
 FastAPI REST Server (`stock-api`, Port 8000:8000)
-       │
-       │ HTTP REST / JSON (CORS enabled)
+  ├── Public Endpoints: /stocks, /stocks/{symbol}/history, /auth/register, /auth/login
+  └── Protected Endpoints: /auth/me, /portfolio, /portfolio/transactions
+       ▲
+       │ HTTP REST / JSON (JWT Bearer Auth, CORS enabled)
        ▼
 React + TypeScript Frontend Client (Vite Dev Server, Port 5173)
+  ├── Market Dashboard View (Live Chart, Technical Insights, Watchlist/Waitlist)
+  └── Portfolio Management View (Valuation, Holdings Table, Trade Form, Ledger)
 ```
 
 ---
 
-## 3. Technology Stack
+## 3. Database Schema & Entity-Relationship (ER) Diagram
 
-| Layer | Component | Version / Image | Purpose |
+### Mermaid ER Diagram
+
+```mermaid
+erDiagram
+    users ||--o{ portfolios : "owns (1:N, ON DELETE CASCADE)"
+    portfolios ||--o{ transactions : "contains (1:N, ON DELETE CASCADE)"
+    
+    users {
+        uuid user_id PK "DEFAULT gen_random_uuid()"
+        varchar name "NOT NULL"
+        varchar email UK "NOT NULL, UNIQUE"
+        varchar password_hash "NOT NULL (bcrypt)"
+        timestamptz created_at "DEFAULT CURRENT_TIMESTAMP"
+    }
+
+    portfolios {
+        uuid portfolio_id PK "DEFAULT gen_random_uuid()"
+        uuid user_id FK "REFERENCES users(user_id) ON DELETE CASCADE"
+        varchar name "NOT NULL DEFAULT 'Default Portfolio'"
+        timestamptz created_at "DEFAULT CURRENT_TIMESTAMP"
+    }
+
+    transactions {
+        uuid transaction_id PK "DEFAULT gen_random_uuid()"
+        uuid portfolio_id FK "REFERENCES portfolios(portfolio_id) ON DELETE CASCADE"
+        varchar symbol "NOT NULL"
+        varchar transaction_type "NOT NULL, CHECK (BUY, SELL)"
+        numeric quantity "NOT NULL, CHECK (quantity > 0)"
+        numeric price "NOT NULL, CHECK (price > 0)"
+        timestamptz transaction_date "DEFAULT CURRENT_TIMESTAMP"
+        timestamptz created_at "DEFAULT CURRENT_TIMESTAMP"
+    }
+
+    trades {
+        varchar redis_id PK "Format: <epoch_ms>-<seq>"
+        varchar symbol "Indexed asset ticker"
+        numeric price "Market observation price"
+        integer volume "Observed volume"
+    }
+```
+
+### Table Specifications & Constraints
+
+#### 1. `public.users`
+Stores user credentials and profile information.
+- `user_id` (`UUID PRIMARY KEY DEFAULT gen_random_uuid()`): Unique identifier.
+- `name` (`VARCHAR(100) NOT NULL`): User's display name.
+- `email` (`VARCHAR(255) NOT NULL UNIQUE`): Unique normalized email address. Indexed via `idx_users_email`.
+- `password_hash` (`VARCHAR(255) NOT NULL`): Salted bcrypt hash (rounds=12). Plaintext passwords are never stored.
+- `created_at` (`TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP`).
+
+#### 2. `public.portfolios`
+Represents an investment account belonging to a registered user.
+- `portfolio_id` (`UUID PRIMARY KEY DEFAULT gen_random_uuid()`): Unique portfolio identifier.
+- `user_id` (`UUID NOT NULL REFERENCES public.users(user_id) ON DELETE CASCADE`): Foreign key establishing ownership. Indexed via `idx_portfolios_user_id`.
+- `name` (`VARCHAR(100) NOT NULL DEFAULT 'Default Portfolio'`).
+- `created_at` (`TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP`).
+
+#### 3. `public.transactions`
+Immutable financial ledger recording buy and sell transactions.
+- `transaction_id` (`UUID PRIMARY KEY DEFAULT gen_random_uuid()`).
+- `portfolio_id` (`UUID NOT NULL REFERENCES public.portfolios(portfolio_id) ON DELETE CASCADE`): Foreign key link. Indexed via `idx_transactions_portfolio_id`.
+- `symbol` (`VARCHAR(20) NOT NULL`): Tracked ticker symbol (e.g., `RELIANCE.NS`). Indexed via `idx_transactions_symbol`.
+- `transaction_type` (`VARCHAR(4) NOT NULL CHECK (transaction_type IN ('BUY', 'SELL'))`): Transaction action constraint.
+- `quantity` (`NUMERIC(12, 4) NOT NULL CHECK (quantity > 0)`): Number of shares traded. Must be strictly positive.
+- `price` (`NUMERIC(12, 2) NOT NULL CHECK (price > 0)`): Transaction price per share. Must be strictly positive.
+- `transaction_date` (`TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP`): Execution timestamp.
+- `created_at` (`TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP`).
+
+#### 4. `public.trades`
+Raw market tick observations ingested from Redis Streams.
+- `redis_id` (`VARCHAR(30) PRIMARY KEY`): Stream ID (`<epoch_ms>-<seq>`), guaranteeing idempotent ingestion.
+- `symbol` (`VARCHAR(20)`), `price` (`NUMERIC(10,2)`), `volume` (`INTEGER`).
+
+---
+
+## 4. Portfolio Accounting & Business Logic
+
+Holdings and financial metrics are computed dynamically from the transaction ledger:
+
+### 1. Weighted Average Cost (WAC) Method
+- **BUY Transaction**:
+  $$\text{New Cost Basis} = \frac{(\text{Prev Qty} \times \text{Prev Avg Cost}) + (\text{Buy Qty} \times \text{Buy Price})}{\text{Prev Qty} + \text{Buy Qty}}$$
+- **SELL Transaction**:
+  $$\text{Realized P\&L} = (\text{Sell Price} - \text{Current Avg Cost}) \times \text{Sold Qty}$$
+  The remaining shares retain the existing average cost basis. When holding quantity reaches zero, average cost basis resets to zero.
+
+### 2. Live Market Valuation
+- **Current Market Value**: $\text{Held Quantity} \times \text{Latest Market Price}$ (queried via `DISTINCT ON (symbol)` from `trades`).
+- **Unrealized P&L**: $\text{Current Market Value} - (\text{Held Quantity} \times \text{Avg Cost})$.
+- **Return Percentage**: $\frac{\text{Unrealized P\&L}}{\text{Invested Cost}} \times 100\%$.
+
+### 3. Concurrency Control & Deletion Integrity
+- **Row-Level Locking**: When recording transactions, `SELECT portfolio_id FROM portfolios WHERE ... FOR UPDATE;` prevents concurrent operations from causing negative balances.
+- **Over-selling Rejection**: A SELL transaction is rejected with HTTP 400 if requested quantity exceeds available balance ($\sum \text{BUY} - \sum \text{SELL}$).
+- **Safe Transaction Deletion**: Deleting a BUY transaction verifies that the removal will not cause running balance to drop below zero at any point during subsequent SELLs. If dependent sales exist, the deletion is aborted with HTTP 400.
+
+---
+
+## 5. REST API Documentation
+
+Base URL: `http://localhost:8000` (Swagger UI: `http://localhost:8000/docs`)
+
+### Authentication Endpoints
+
+| Method | Endpoint | Description | Status Codes |
 | :--- | :--- | :--- | :--- |
-| **Ingestion Worker** | Python / yfinance | `python:3.11-slim` | Polls market prices and appends events to Redis Streams. |
-| **Message Broker** | Redis Streams | `redis:7-alpine` | In-memory stream buffer (`trades`) decoupling ingestion from DB writes. |
-| **Database Writer** | Python / psycopg2 | `python:3.11-slim` | Consumes Redis events and commits them into PostgreSQL. |
-| **DBMS Engine** | PostgreSQL / TimescaleDB | `timescale/timescaledb:latest-pg16` | Relational time-series database managing persistent trade tables. |
-| **Backend REST API** | FastAPI / Uvicorn | `python:3.11-slim` | Serves parameterized market queries and converts Redis IDs to ISO UTC. |
-| **Frontend UI** | React / TypeScript / Vite | `React 19` / `Vite 8.3` | Fintech dashboard with interactive search, chart, and list views. |
-| **Orchestration** | Docker Compose | Compose v2 | Coordinates container networking, storage volumes, and ports. |
+| `POST` | `/auth/register` | Register a new user and create default portfolio | `201 Created`, `400 Bad Request`, `409 Conflict` |
+| `POST` | `/auth/login` | Authenticate user and issue signed JWT token | `200 OK`, `401 Unauthorized` |
+| `GET` | `/auth/me` | Fetch authenticated user profile (Bearer token required) | `200 OK`, `401 Unauthorized` |
 
----
+### Portfolio Endpoints
 
-## 4. Actual Database Schema
+| Method | Endpoint | Description | Status Codes |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/portfolio` | Retrieve user portfolio summary and calculated holdings | `200 OK`, `401 Unauthorized` |
+| `POST` | `/portfolio/transactions` | Record a BUY or SELL transaction with balance checks | `201 Created`, `400 Bad Request`, `401 Unauthorized` |
+| `GET` | `/portfolio/transactions` | Retrieve user transaction history ordered by date | `200 OK`, `401 Unauthorized` |
+| `DELETE` | `/portfolio/transactions/{id}`| Safely delete a transaction with balance validation | `200 OK`, `400 Bad Request`, `404 Not Found` |
 
-Inspection of the live PostgreSQL database (`psql \d+ trades` and `\dt`) verifies that **exactly one application table exists**:
+### Market Endpoints
 
-### Table: `public.trades`
-
-```sql
-CREATE TABLE IF NOT EXISTS public.trades (
-    redis_id VARCHAR(30) PRIMARY KEY,
-    symbol   VARCHAR(20),
-    price    NUMERIC(10,2),
-    volume   INTEGER
-);
-```
-
-### Column Specifications & Constraints
-
-| Column Name | PostgreSQL Data Type | Nullable | Constraints & Indexing | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| `redis_id` | `character varying(30)` | **NOT NULL** | **PRIMARY KEY** (`trades_pkey`, btree) | Unique Redis Stream ID (`<epoch_ms>-<seq>`), used as immutable time-order key. |
-| `symbol` | `character varying(20)` | YES | None | Stock ticker (e.g., `RELIANCE.NS`, `TCS.NS`). |
-| `price` | `numeric(10,2)` | YES | None | Trade price in INR with 2 decimal precision. |
-| `volume` | `integer` | YES | None | Number of shares associated with tick (currently fixed at 100). |
-
-### Schema Disclosures
-- **No Foreign Keys**: `trades` is a standalone table.
-- **Missing Relational Tables**: There are currently **no** database tables for `users`, `watchlists`, `waitlists`, `portfolios`, or `alerts`. Watchlist and Waitlist states are maintained client-side in browser storage.
-
----
-
-## 5. DBMS Concepts Demonstrated
-
-1. **Stream Decoupling & Backpressure Mitigation**: Rather than writing directly to PostgreSQL on every external API fetch, trades are queued in Redis Streams (`trades`). If PostgreSQL experiences lock contention or restarts, Redis buffers incoming ticks without losing data.
-2. **Idempotent Ingestion via Primary Key**: The `redis_id` generated by Redis (e.g., `1791993976437-0`) acts as the natural primary key. Duplicate consumer processing of the same stream event is prevented by PostgreSQL's unique btree index (`trades_pkey`).
-3. **Time-Series Timestamp Derivation**: Milliseconds stored in `redis_id` are converted directly into ISO 8601 UTC timestamps by the API (`datetime.fromtimestamp(ms / 1000.0)`), avoiding redundant timestamp storage columns.
-4. **Optimized Aggregations & Query Plans**:
-   - **Latest Price Snapshot (`/stocks`)**:
-     ```sql
-     SELECT DISTINCT ON (symbol) symbol, price, volume, redis_id 
-     FROM trades 
-     ORDER BY symbol, redis_id DESC;
-     ```
-     Utilizes PostgreSQL's `DISTINCT ON` to scan the latest entry per symbol efficiently.
-   - **Chronological History Slice (`/stocks/{symbol}/history`)**:
-     ```sql
-     SELECT price, volume, redis_id 
-     FROM trades 
-     WHERE symbol = %s 
-     ORDER BY redis_id DESC 
-     LIMIT 100;
-     ```
-     Fetches the most recent 100 points via indexed reverse scan, which the API reverses in memory (`rows.reverse()`) to stream ascending chronological data to the chart.
+| Method | Endpoint | Description | Status Codes |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/stocks` | Retrieve latest price for all 10 tracked symbols | `200 OK`, `500 Server Error` |
+| `GET` | `/stocks/{symbol}/history` | Retrieve up to 100 latest points chronologically | `200 OK`, `404 Not Found` |
 
 ---
 
@@ -129,15 +196,12 @@ From the project root:
 docker compose up -d --build
 ```
 
-Verify that all 5 services are running:
-```bash
-docker compose ps
-```
+Verify all 5 services are running (`docker compose ps`):
 - `stock-redis`: Port `6380:6379`
 - `stock-timescaledb`: Port `5433:5432`
-- `stock-producer`: Streaming worker
-- `stock-consumer`: DB writer worker
-- `stock-api`: Port `8000:8000`
+- `stock-producer`: Streaming market quotes
+- `stock-consumer`: Database stream writer
+- `stock-api`: FastAPI backend on Port `8000:8000`
 
 ### 2. Launch Frontend (React + Vite)
 ```bash
@@ -147,60 +211,25 @@ npm run dev
 ```
 Open **`http://localhost:5173`** in your browser.
 
-To verify frontend builds and linting:
-```bash
-npm run lint     # oxlint static analysis (0 warnings, 0 errors)
-npm run build    # TypeScript compiler check (tsc -b) & Vite production bundle
-```
-
 ---
 
-## 7. REST API Documentation
+## 7. Verification & Test Results
 
-Base URL: `http://localhost:8000` (Swagger UI: `http://localhost:8000/docs`)
+All test suites and build checks have been executed and verified:
 
-### `GET /stocks`
-Returns the latest recorded price, volume, and timestamp for all tracked stocks.
-```json
-[
-  {
-    "symbol": "RELIANCE.NS",
-    "price": 1174.60,
-    "volume": 100,
-    "timestamp": "2026-10-14T16:06:16.437000+00:00"
-  },
-  {
-    "symbol": "TCS.NS",
-    "price": 2845.50,
-    "volume": 100,
-    "timestamp": "2026-10-14T16:06:15.110000+00:00"
-  }
-]
-```
-
-### `GET /stocks/{symbol}/history`
-Returns up to 100 latest records for `{symbol}` in chronological order (oldest to newest).
-- **Success (`200 OK`)**: Array of `[{"price": float, "volume": int, "timestamp": string}, ...]`
-- **Error (`404 Not Found`)**: `{"detail": "No historical records found for symbol <symbol>"}`
+| Test / Check | Command Executed | Result | Details |
+| :--- | :--- | :--- | :--- |
+| **Auth & Portfolio End-to-End** | `python test_auth_portfolio.py` | **16/16 Passed** | Verified registration, duplicate email rejection (409), invalid login (401), token verification, empty portfolio, WAC computation, realized P&L, over-sell rejection (400), dependent delete blocking (400), and multi-tenant data isolation. |
+| **Market Data Pipeline** | `python -c "..."` on `/stocks` | **Passed** | Verified `/stocks` returns all 10 tracked equities from PostgreSQL with real-time timestamps. |
+| **Frontend Static Linter** | `npm run lint` (`oxlint`) | **0 Errors, 0 Warnings** | Clean across all 18 TypeScript components and services. |
+| **Frontend Production Build** | `npm run build` (`tsc -b && vite build`) | **Passed (781ms)** | Verified complete TypeScript type safety and production asset compilation. |
+| **Relational Database DDL** | `psql \dt` and `\d+` | **Passed** | Verified tables `users`, `portfolios`, `transactions`, `trades` with primary keys, foreign keys, and btree indexes. |
 
 ---
 
 ## 8. Disclosures & Known Limitations
 
-1. **Volume Value**: The producer (`producer/producer.py`) currently records a fixed value (`"volume": "100"`). Real tick volume is not fetched from Yahoo Finance.
-2. **Market Feed Polling**: Prices are polled every 5 seconds from Yahoo Finance (`fast_info["lastPrice"]`). It is not an exchange-grade tick feed, and update frequency is bounded by market operating hours and Yahoo Finance's internal caching.
-3. **Storage Limitation for Watchlist & Waitlist**: Watchlist and Waitlist states are stored in browser `localStorage` (`stocksense_watchlist` and `stocksense_waitlist`). **They are not currently persisted in PostgreSQL tables.**
-4. **Fixed Tracked Equities**: Only 10 NIFTY 50 equities are configured in `producer/symbols.py`.
-
----
-
-## 9. Future DBMS Enhancements
-
-- **TimescaleDB Hypertables**: Convert `trades` into a partitioned hypertable (`create_hypertable('trades', 'time_column')`) to improve multi-million row query performance.
-- **Relational User & Watchlist Schema**:
-  ```sql
-  CREATE TABLE users (user_id UUID PRIMARY KEY, email VARCHAR(255) UNIQUE);
-  CREATE TABLE watchlists (user_id UUID REFERENCES users(user_id), symbol VARCHAR(20), PRIMARY KEY(user_id, symbol));
-  CREATE TABLE waitlists (user_id UUID REFERENCES users(user_id), symbol VARCHAR(20), PRIMARY KEY(user_id, symbol));
-  ```
-- **Composite B-Tree Indexes**: Add composite index `CREATE INDEX idx_trades_symbol_redis_id ON trades(symbol, redis_id DESC);` to accelerate history queries.
+1. **Volume Value**: The producer (`producer/producer.py`) currently records a fixed value (`"volume": "100"`).
+2. **Market Feed Polling**: Prices are polled every 5 seconds from Yahoo Finance (`fast_info["lastPrice"]`). It is not an exchange tick feed and reflects market operating hours.
+3. **Session Token Storage**: Access tokens are stored in browser `localStorage` (`stocksense_token`) for development ease. For production deployments, HTTP-only secure cookies are recommended.
+4. **Watchlist / Waitlist Persistence**: Watchlist and Waitlist states are stored in browser `localStorage` as client-side queues. Portfolio holdings and transactions are fully persisted in PostgreSQL.

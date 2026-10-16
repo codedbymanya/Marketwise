@@ -44,6 +44,7 @@ services:
       - POSTGRES_USER=admin
       - POSTGRES_PASSWORD=qwerty
       - POSTGRES_DB=postgres
+      - JWT_SECRET=stocksense_jwt_secret_dev_key_change_in_prod_9918
 
 volumes:
   postgres-data:

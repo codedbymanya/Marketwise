@@ -1,6 +1,6 @@
-import type{ Stock, StockHistory } from '../types/api';
+import type { Stock, StockHistory } from '../types/api';
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export const fetchStocks = async (): Promise<Stock[]> => {
   const response = await fetch(`${API_BASE_URL}/stocks`);

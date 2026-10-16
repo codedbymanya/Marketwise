@@ -1,14 +1,28 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { LineChart, Search, User, X } from 'lucide-react';
+import { LineChart, Search, User as UserIcon, X, Briefcase, LayoutDashboard, LogOut } from 'lucide-react';
 import type { Stock } from '../types/api';
+import type { User } from '../types/auth';
 import { COMPANY_NAMES } from '../constants/stocks';
 
 interface HeaderProps {
   stocks: Stock[];
   onSelectStock: (symbol: string) => void;
+  activeView: 'dashboard' | 'portfolio';
+  onSelectView: (view: 'dashboard' | 'portfolio') => void;
+  user: User | null;
+  onOpenAuthModal: () => void;
+  onLogout: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ stocks, onSelectStock }) => {
+export const Header: React.FC<HeaderProps> = ({ 
+  stocks, 
+  onSelectStock, 
+  activeView, 
+  onSelectView, 
+  user, 
+  onOpenAuthModal, 
+  onLogout 
+}) => {
   const [query, setQuery] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -38,6 +52,7 @@ export const Header: React.FC<HeaderProps> = ({ stocks, onSelectStock }) => {
 
   const handleSelect = (symbol: string) => {
     onSelectStock(symbol);
+    onSelectView('dashboard');
     setQuery('');
     setIsFocused(false);
   };
@@ -54,16 +69,61 @@ export const Header: React.FC<HeaderProps> = ({ stocks, onSelectStock }) => {
 
   return (
     <header className="card bento-header" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '16px 24px', position: 'relative' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-        <div style={{ background: 'var(--accent)', color: 'white', padding: '8px', borderRadius: '8px' }}>
-          <LineChart size={20} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer' }} onClick={() => onSelectView('dashboard')}>
+          <div style={{ background: 'var(--accent)', color: 'white', padding: '8px', borderRadius: '8px', display: 'flex', alignItems: 'center' }}>
+            <LineChart size={20} />
+          </div>
+          <h1 style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-main)', letterSpacing: '-0.02em', margin: 0 }}>
+            StockSense
+          </h1>
         </div>
-        <h1 style={{ fontSize: '1.25rem', fontWeight: 600, color: 'var(--text-main)', letterSpacing: '-0.02em' }}>
-          StockSense
-        </h1>
+
+        {/* Navigation View Switcher */}
+        <nav style={{ display: 'flex', gap: '4px', background: 'var(--surface-hover)', padding: '4px', borderRadius: '8px' }}>
+          <button
+            onClick={() => onSelectView('dashboard')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 14px',
+              borderRadius: '6px',
+              fontSize: '0.85rem',
+              fontWeight: activeView === 'dashboard' ? 600 : 500,
+              background: activeView === 'dashboard' ? 'var(--surface)' : 'transparent',
+              color: activeView === 'dashboard' ? 'var(--text-main)' : 'var(--text-muted)',
+              boxShadow: activeView === 'dashboard' ? 'var(--shadow-sm)' : 'none',
+              transition: 'all 0.15s'
+            }}
+          >
+            <LayoutDashboard size={15} />
+            Market Dashboard
+          </button>
+          <button
+            onClick={() => onSelectView('portfolio')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 14px',
+              borderRadius: '6px',
+              fontSize: '0.85rem',
+              fontWeight: activeView === 'portfolio' ? 600 : 500,
+              background: activeView === 'portfolio' ? 'var(--surface)' : 'transparent',
+              color: activeView === 'portfolio' ? 'var(--text-main)' : 'var(--text-muted)',
+              boxShadow: activeView === 'portfolio' ? 'var(--shadow-sm)' : 'none',
+              transition: 'all 0.15s'
+            }}
+          >
+            <Briefcase size={15} />
+            Portfolio
+          </button>
+        </nav>
       </div>
       
       <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+        {/* Search */}
         <div ref={containerRef} style={{ position: 'relative' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--surface-hover)', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)' }}>
             <Search size={16} color="var(--text-muted)" />
@@ -77,7 +137,7 @@ export const Header: React.FC<HeaderProps> = ({ stocks, onSelectStock }) => {
               }}
               onFocus={() => setIsFocused(true)}
               onKeyDown={handleKeyDown}
-              style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: '0.875rem', width: '200px' }}
+              style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: '0.875rem', width: '180px' }}
             />
             {query && (
               <button 
@@ -152,12 +212,56 @@ export const Header: React.FC<HeaderProps> = ({ stocks, onSelectStock }) => {
           )}
         </div>
 
-        <button 
-          title="Account (Planned Feature)"
-          style={{ padding: '8px', borderRadius: '50%', background: 'var(--surface-hover)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-        >
-          <User size={18} color="var(--text-muted)" />
-        </button>
+        {/* User Authentication Status */}
+        {user ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--surface-hover)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+              <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: 'var(--accent)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700 }}>
+                {user.name.charAt(0).toUpperCase()}
+              </div>
+              <span style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-main)', maxWidth: '120px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {user.name}
+              </span>
+            </div>
+            <button
+              onClick={onLogout}
+              title="Sign Out"
+              style={{
+                padding: '8px',
+                borderRadius: '8px',
+                background: 'var(--surface-hover)',
+                border: '1px solid var(--border)',
+                color: 'var(--text-muted)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'color 0.2s'
+              }}
+            >
+              <LogOut size={16} />
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={onOpenAuthModal}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '8px 16px',
+              borderRadius: '8px',
+              background: 'var(--surface-hover)',
+              border: '1px solid var(--border)',
+              fontSize: '0.875rem',
+              fontWeight: 600,
+              color: 'var(--text-main)',
+              transition: 'background 0.2s'
+            }}
+          >
+            <UserIcon size={16} color="var(--text-muted)" />
+            Sign In
+          </button>
+        )}
       </div>
     </header>
   );
