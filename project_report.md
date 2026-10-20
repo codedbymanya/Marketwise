@@ -1,7 +1,9 @@
-# 📈 StockSense — Project Report
+# 📈 MarketWise — DBMS Project Report
 **Course:** Database Management Systems (DBMS) Mini-Project  
-**Project Name:** StockSense  
-**Version:** 2.0.0
+**Project Name:** MarketWise (Stream-Buffered Stock Pipeline & Portfolio Ledger)  
+**Version:** 2.0.0  
+**GitHub Repository:** [https://github.com/codedbymanya/Marketwise](https://github.com/codedbymanya/Marketwise)  
+**Generated Word Document:** [MarketWise_DBMS_Project_Report.docx](file:///c:/Users/manya/Downloads/stock-proj-dbms-main/MarketWise_DBMS_Project_Report.docx)  
 
 ---
 
@@ -71,17 +73,9 @@ The project targets the following learning and engineering objectives:
 | Data Persistence | Docker Named Volume (`postgres-data`) |
 | Environment Config | `.env` file + Docker Compose `environment` |
 
-### 3.4 Data Flow Architecture
+```
 
-```
-Yahoo Finance (yfinance)
-  └─► Producer (Python) ──XADD──► Redis Streams ──XREAD──► Consumer (Python)
-                                                                   └─► TimescaleDB (PostgreSQL 16)
-                                                                              ▲
-                                                                    FastAPI REST API
-                                                                              ▲
-                                                               React + TypeScript (Vite)
-```
+![MarketWise Architecture Diagram](file:///c:/Users/manya/Downloads/stock-proj-dbms-main/architecture_diagram.png)
 
 ---
 
@@ -119,7 +113,23 @@ Docker Compose provides **reproducible, one-command setup** (`docker compose up 
 
 ---
 
-## 5. Features
+## 5. Entity-Relationship (ER) Model & Database Schema
+
+The database follows a normalized relational model (3NF) ensuring ACID transactional guarantees, cascading deletes (`ON DELETE CASCADE`), and check constraints.
+
+![MarketWise ER Diagram](file:///c:/Users/manya/Downloads/stock-proj-dbms-main/er_diagram.png)
+
+### Table Specifications:
+1. **`users`**: `user_id` (PK UUID), `name`, `email` (UK), `password_hash` (bcrypt), `created_at`.
+2. **`portfolios`**: `portfolio_id` (PK UUID), `user_id` (FK `users` ON DELETE CASCADE), `name`, `created_at`.
+3. **`transactions`**: `transaction_id` (PK UUID), `portfolio_id` (FK `portfolios` ON DELETE CASCADE), `symbol`, `transaction_type` (`BUY`/`SELL`), `quantity` (> 0), `price` (> 0), `transaction_date`.
+4. **`watchlists`**: `watchlist_id` (PK UUID), `user_id` (FK `users` ON DELETE CASCADE), `symbol`, `UNIQUE(user_id, symbol)`.
+5. **`price_alerts`**: `alert_id` (PK UUID), `user_id` (FK `users` ON DELETE CASCADE), `symbol`, `target_price`, `condition` (`ABOVE`/`BELOW`), `status` (`ACTIVE`/`TRIGGERED`).
+6. **`trades`**: `redis_id` (PK), `symbol` (Indexed), `price`, `volume`.
+
+---
+
+## 6. Features
 
 ### 5.1 Real-Time Market Data Feed
 - **Live price ingestion** from Yahoo Finance for **10 NIFTY 50 stocks** (RELIANCE.NS, TCS.NS, HDFCBANK.NS, ICICIBANK.NS, INFY.NS, BHARTIARTL.NS, SBIN.NS, LT.NS, HINDUNILVR.NS, ITC.NS)
@@ -186,11 +196,13 @@ Docker Compose provides **reproducible, one-command setup** (`docker compose up 
 |---|---|
 | **Domain** | Financial Markets / Portfolio Management |
 | **Architecture** | Event-driven microservices (Redis Streams pipeline) |
-| **Data Model** | Relational (4 tables, normalized, FK-constrained) |
-| **API** | REST (9 endpoints, JWT-protected) |
-| **Auth** | bcrypt + HS256 JWT |
-| **Business Logic** | WAC accounting, real-time P&L, concurrency-safe transactions |
+| **Data Model** | Relational (6 tables: users, portfolios, transactions, watchlists, alerts, trades) |
+| **API** | REST (11 endpoints, JWT-protected) |
+| **Auth** | bcrypt (cost=12) + HS256 JWT |
+| **Business Logic** | WAC accounting, real-time P&L, concurrency-safe transactions (`FOR UPDATE`) |
 | **Frontend** | React 19 + TypeScript 6 + Vite 8 + Recharts |
 | **Infrastructure** | Docker Compose (5 services) |
-| **Test Coverage** | 16/16 E2E tests passing |
-| **Known Limitations** | Hardcoded volume, localStorage tokens, 10/50 NIFTY stocks |
+| **Test Coverage** | 53/53 E2E tests passing (`test_comprehensive_suite.py`) |
+| **GitHub Repo** | [https://github.com/codedbymanya/Marketwise](https://github.com/codedbymanya/Marketwise) |
+| **Word Document** | [MarketWise_DBMS_Project_Report.docx](file:///c:/Users/manya/Downloads/stock-proj-dbms-main/MarketWise_DBMS_Project_Report.docx) |
+
