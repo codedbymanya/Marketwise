@@ -1,4 +1,4 @@
--- StockSense Database Schema Initialization
+-- MarketWise Database Schema Initialization
 -- Defines tables for market ticks, user authentication, and portfolio management.
 
 -- 1. Ingestion Table: Market trades buffered from Redis Streams
@@ -44,3 +44,33 @@ CREATE INDEX IF NOT EXISTS idx_portfolios_user_id ON public.portfolios(user_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_portfolio_id ON public.transactions(portfolio_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_symbol ON public.transactions(symbol);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON public.transactions(portfolio_id, transaction_date ASC, created_at ASC);
+
+-- 5. User Watchlists Table (Database-backed persistent watchlists)
+CREATE TABLE IF NOT EXISTS public.watchlists (
+    watchlist_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES public.users(user_id) ON DELETE CASCADE,
+    symbol VARCHAR(20) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_user_watchlist_symbol UNIQUE (user_id, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_watchlists_user_id ON public.watchlists(user_id);
+CREATE INDEX IF NOT EXISTS idx_watchlists_user_symbol ON public.watchlists(user_id, symbol);
+
+-- 6. Price Alerts Table (Database-backed real-time price alerts)
+CREATE TABLE IF NOT EXISTS public.price_alerts (
+    alert_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES public.users(user_id) ON DELETE CASCADE,
+    symbol VARCHAR(20) NOT NULL,
+    target_price NUMERIC(12, 2) NOT NULL CHECK (target_price > 0),
+    condition VARCHAR(10) NOT NULL CHECK (condition IN ('ABOVE', 'BELOW')),
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'TRIGGERED', 'DISABLED')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    triggered_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,
+    triggered_price NUMERIC(12, 2) DEFAULT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_alerts_user_id ON public.price_alerts(user_id);
+CREATE INDEX IF NOT EXISTS idx_price_alerts_symbol_status ON public.price_alerts(symbol, status);
+CREATE INDEX IF NOT EXISTS idx_price_alerts_user_status ON public.price_alerts(user_id, status);
+

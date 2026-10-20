@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import type { Stock, StockHistory } from '../types/api';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { Bookmark, BookmarkCheck, Clock } from 'lucide-react';
+import { Bookmark, BookmarkCheck, Clock, Bell } from 'lucide-react';
 import { COMPANY_NAMES } from '../constants/stocks';
 
 interface StockCardProps {
@@ -12,6 +12,7 @@ interface StockCardProps {
   onToggleMonitor: (symbol: string) => void;
   onToggleWaitlist: (symbol: string) => void;
   isLoading: boolean;
+  onOpenAlertForStock?: (symbol: string) => void;
 }
 
 export const StockCard: React.FC<StockCardProps> = ({ 
@@ -21,7 +22,8 @@ export const StockCard: React.FC<StockCardProps> = ({
   isWaitlisted, 
   onToggleMonitor, 
   onToggleWaitlist, 
-  isLoading 
+  isLoading,
+  onOpenAlertForStock,
 }) => {
   const chartData = useMemo(() => {
     return history.map(item => ({
@@ -103,6 +105,30 @@ export const StockCard: React.FC<StockCardProps> = ({
             <Clock size={16} />
             {isWaitlisted ? 'Waitlisted' : 'Waitlist'}
           </button>
+
+          {onOpenAlertForStock && (
+            <button
+              onClick={() => onOpenAlertForStock(stock.symbol)}
+              title="Set Price Alert"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '8px 14px',
+                borderRadius: '8px',
+                border: '1px solid var(--border)',
+                background: 'transparent',
+                color: 'var(--text-main)',
+                fontWeight: 500,
+                fontSize: '0.875rem',
+                transition: 'all 0.2s',
+                cursor: 'pointer'
+              }}
+            >
+              <Bell size={16} />
+              Alert
+            </button>
+          )}
         </div>
       </div>
 

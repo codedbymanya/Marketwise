@@ -3,6 +3,8 @@ import type { Stock, StockHistory } from '../types/api';
 import type { User } from '../types/auth';
 import { fetchStocks, fetchStockHistory } from '../services/api';
 import { fetchCurrentUser } from '../services/authApi';
+import { fetchWatchlist, addToWatchlist, removeFromWatchlist, syncWatchlist } from '../services/watchlistApi';
+import { fetchAlerts } from '../services/alertApi';
 import { Header } from '../components/Header';
 import { MarketSummary } from '../components/MarketSummary';
 import { StockCard } from '../components/StockCard';
@@ -10,10 +12,11 @@ import { StockList } from '../components/StockList';
 import { StockAnalysis } from '../components/StockAnalysis';
 import { PortfolioView } from '../components/PortfolioView';
 import { AuthModal } from '../components/AuthModal';
+import { AlertModal } from '../components/AlertModal';
 
-const WATCHLIST_STORAGE_KEY = 'stocksense_watchlist';
-const WAITLIST_STORAGE_KEY = 'stocksense_waitlist';
-const TOKEN_STORAGE_KEY = 'stocksense_token';
+const WATCHLIST_STORAGE_KEY = 'marketwise_watchlist';
+const WAITLIST_STORAGE_KEY = 'marketwise_waitlist';
+const TOKEN_STORAGE_KEY = 'marketwise_token';
 
 export const Dashboard: React.FC = () => {
   const [activeView, setActiveView] = useState<'dashboard' | 'portfolio'>('dashboard');
@@ -26,16 +29,15 @@ export const Dashboard: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
-  // Watchlist & Waitlist backed by localStorage for client-side persistence
-  const [watchlist, setWatchlist] = useState<Set<string>>(() => {
-    try {
-      const stored = localStorage.getItem(WATCHLIST_STORAGE_KEY);
-      return stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
-    } catch {
-      return new Set<string>();
-    }
-  });
+  // Price Alerts Modal state
+  const [isAlertModalOpen, setIsAlertModalOpen] = useState(false);
+  const [alertModalStockSymbol, setAlertModalStockSymbol] = useState<string | null>(null);
+  const [triggeredAlertCount, setTriggeredAlertCount] = useState<number>(0);
 
+  // Database-backed Watchlist state (Set of symbols)
+  const [watchlist, setWatchlist] = useState<Set<string>>(new Set<string>());
+
+  // Waitlist (staged observations queue)
   const [waitlist, setWaitlist] = useState<Set<string>>(() => {
     try {
       const stored = localStorage.getItem(WAITLIST_STORAGE_KEY);
@@ -52,7 +54,12 @@ export const Dashboard: React.FC = () => {
   // Validate authenticated session on load
   useEffect(() => {
     const verifySession = async () => {
-      if (!token) return;
+      if (!token) {
+        setUser(null);
+        setWatchlist(new Set());
+        setTriggeredAlertCount(0);
+        return;
+      }
       try {
         const profile = await fetchCurrentUser(token);
         setUser(profile);
@@ -61,19 +68,85 @@ export const Dashboard: React.FC = () => {
         localStorage.removeItem(TOKEN_STORAGE_KEY);
         setToken(null);
         setUser(null);
+        setWatchlist(new Set());
+        setTriggeredAlertCount(0);
       }
     };
     verifySession();
   }, [token]);
 
-  // Sync Watchlist to localStorage
+  // Load and Migrate Watchlist from Database
   useEffect(() => {
-    try {
-      localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(Array.from(watchlist)));
-    } catch (e) {
-      console.error('Failed to sync watchlist to localStorage', e);
+    const loadUserWatchlist = async () => {
+      if (!token) {
+        setWatchlist(new Set());
+        return;
+      }
+      try {
+        // Migration: If user previously had watchlist stored locally in localStorage, sync to DB
+        const storedLocal = localStorage.getItem(WATCHLIST_STORAGE_KEY);
+        if (storedLocal) {
+          try {
+            const localSymbols = JSON.parse(storedLocal) as string[];
+            if (Array.isArray(localSymbols) && localSymbols.length > 0) {
+              await syncWatchlist(token, localSymbols);
+            }
+          } catch {
+            // ignore malformed local storage
+          } finally {
+            // Remove localStorage as primary source of truth
+            localStorage.removeItem(WATCHLIST_STORAGE_KEY);
+          }
+        }
+
+        const serverItems = await fetchWatchlist(token);
+        setWatchlist(new Set(serverItems.map(item => item.symbol)));
+      } catch (e) {
+        console.error('Failed to load database watchlist:', e);
+      }
+    };
+
+    loadUserWatchlist();
+  }, [token]);
+
+  // Load Alerts and calculate Triggered count
+  const checkAlerts = useCallback(async () => {
+    if (!token) {
+      setTriggeredAlertCount(0);
+      return;
     }
-  }, [watchlist]);
+    try {
+      const userAlerts = await fetchAlerts(token);
+      const triggered = userAlerts.filter(a => a.status === 'TRIGGERED');
+      setTriggeredAlertCount(triggered.length);
+    } catch (e) {
+      console.error('Failed to check alerts:', e);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    let isMounted = true;
+    if (!token) return;
+
+    const pollAlerts = async () => {
+      try {
+        const userAlerts = await fetchAlerts(token);
+        if (isMounted) {
+          const triggered = userAlerts.filter(a => a.status === 'TRIGGERED');
+          setTriggeredAlertCount(triggered.length);
+        }
+      } catch (e) {
+        console.error('Failed to check alerts:', e);
+      }
+    };
+
+    pollAlerts();
+    const interval = setInterval(pollAlerts, 10000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [token]);
 
   // Sync Waitlist to localStorage
   useEffect(() => {
@@ -138,13 +211,23 @@ export const Dashboard: React.FC = () => {
     localStorage.removeItem(TOKEN_STORAGE_KEY);
     setToken(null);
     setUser(null);
+    setWatchlist(new Set());
+    setTriggeredAlertCount(0);
   };
 
-  // Watchlist & Waitlist toggles
-  const handleToggleWatchlist = useCallback((symbol: string) => {
+  // Database-backed Watchlist & Waitlist toggles
+  const handleToggleWatchlist = useCallback(async (symbol: string) => {
+    if (!token) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+
+    const isCurrentlyWatched = watchlist.has(symbol);
+
+    // Optimistic update
     setWatchlist(prev => {
       const next = new Set(prev);
-      if (next.has(symbol)) {
+      if (isCurrentlyWatched) {
         next.delete(symbol);
       } else {
         next.add(symbol);
@@ -159,7 +242,28 @@ export const Dashboard: React.FC = () => {
       }
       return next;
     });
-  }, []);
+
+    try {
+      if (isCurrentlyWatched) {
+        await removeFromWatchlist(token, symbol);
+      } else {
+        await addToWatchlist(token, symbol);
+      }
+    } catch (err) {
+      console.error('Failed to update watchlist in database:', err);
+      // Revert optimistic update
+      setWatchlist(prev => {
+        const next = new Set(prev);
+        if (isCurrentlyWatched) {
+          next.add(symbol);
+        } else {
+          next.delete(symbol);
+        }
+        return next;
+      });
+      alert('Could not update watchlist. Please try again.');
+    }
+  }, [token, watchlist]);
 
   const handleToggleWaitlist = useCallback((symbol: string) => {
     setWaitlist(prev => {
@@ -176,12 +280,20 @@ export const Dashboard: React.FC = () => {
           }
           return w;
         });
+        if (token && watchlist.has(symbol)) {
+          removeFromWatchlist(token, symbol).catch(console.error);
+        }
       }
       return next;
     });
-  }, []);
+  }, [token, watchlist]);
 
-  const handleMoveToWatchlist = useCallback((symbol: string) => {
+  const handleMoveToWatchlist = useCallback(async (symbol: string) => {
+    if (!token) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+
     setWaitlist(prev => {
       const next = new Set(prev);
       next.delete(symbol);
@@ -192,9 +304,15 @@ export const Dashboard: React.FC = () => {
       next.add(symbol);
       return next;
     });
-  }, []);
 
-  const handleMoveToWaitlist = useCallback((symbol: string) => {
+    try {
+      await addToWatchlist(token, symbol);
+    } catch (e) {
+      console.error('Failed to move to watchlist:', e);
+    }
+  }, [token]);
+
+  const handleMoveToWaitlist = useCallback(async (symbol: string) => {
     setWatchlist(prev => {
       const next = new Set(prev);
       next.delete(symbol);
@@ -205,15 +323,31 @@ export const Dashboard: React.FC = () => {
       next.add(symbol);
       return next;
     });
-  }, []);
 
-  const handleRemoveFromWatchlist = useCallback((symbol: string) => {
+    if (token) {
+      try {
+        await removeFromWatchlist(token, symbol);
+      } catch (e) {
+        console.error('Failed to remove from watchlist:', e);
+      }
+    }
+  }, [token]);
+
+  const handleRemoveFromWatchlist = useCallback(async (symbol: string) => {
     setWatchlist(prev => {
       const next = new Set(prev);
       next.delete(symbol);
       return next;
     });
-  }, []);
+
+    if (token) {
+      try {
+        await removeFromWatchlist(token, symbol);
+      } catch (e) {
+        console.error('Failed to remove from watchlist:', e);
+      }
+    }
+  }, [token]);
 
   const handleRemoveFromWaitlist = useCallback((symbol: string) => {
     setWaitlist(prev => {
@@ -223,12 +357,21 @@ export const Dashboard: React.FC = () => {
     });
   }, []);
 
+  const handleOpenAlertForStock = useCallback((sym: string) => {
+    if (!token) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+    setAlertModalStockSymbol(sym);
+    setIsAlertModalOpen(true);
+  }, [token]);
+
   const selectedStockData = stocks.find(s => s.symbol === selectedSymbol) || null;
 
   if (isLoadingStocks && stocks.length === 0) {
     return (
       <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-        Initializing StockSense dashboard...
+        Initializing MarketWise dashboard...
       </div>
     );
   }
@@ -255,6 +398,15 @@ export const Dashboard: React.FC = () => {
           user={user}
           onOpenAuthModal={() => setIsAuthModalOpen(true)}
           onLogout={handleLogout}
+          triggeredAlertCount={triggeredAlertCount}
+          onOpenAlertModal={() => {
+            if (!token) {
+              setIsAuthModalOpen(true);
+            } else {
+              setAlertModalStockSymbol(selectedSymbol);
+              setIsAlertModalOpen(true);
+            }
+          }}
         />
         
         {activeView === 'dashboard' ? (
@@ -269,6 +421,7 @@ export const Dashboard: React.FC = () => {
               onToggleMonitor={handleToggleWatchlist}
               onToggleWaitlist={handleToggleWaitlist}
               isLoading={isLoadingHistory}
+              onOpenAlertForStock={handleOpenAlertForStock}
             />
             
             <StockList 
@@ -301,6 +454,15 @@ export const Dashboard: React.FC = () => {
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
         onAuthSuccess={handleAuthSuccess}
+      />
+
+      <AlertModal
+        isOpen={isAlertModalOpen}
+        onClose={() => setIsAlertModalOpen(false)}
+        token={token}
+        stocks={stocks}
+        initialSymbol={alertModalStockSymbol}
+        onAlertTriggeredOrChanged={checkAlerts}
       />
     </div>
   );

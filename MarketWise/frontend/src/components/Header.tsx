@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { LineChart, Search, User as UserIcon, X, Briefcase, LayoutDashboard, LogOut } from 'lucide-react';
+import { LineChart, Search, User as UserIcon, X, Briefcase, LayoutDashboard, LogOut, Bell } from 'lucide-react';
 import type { Stock } from '../types/api';
 import type { User } from '../types/auth';
 import { COMPANY_NAMES } from '../constants/stocks';
@@ -12,6 +12,8 @@ interface HeaderProps {
   user: User | null;
   onOpenAuthModal: () => void;
   onLogout: () => void;
+  triggeredAlertCount?: number;
+  onOpenAlertModal?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({ 
@@ -21,7 +23,9 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectView, 
   user, 
   onOpenAuthModal, 
-  onLogout 
+  onLogout,
+  triggeredAlertCount = 0,
+  onOpenAlertModal,
 }) => {
   const [query, setQuery] = useState('');
   const [isFocused, setIsFocused] = useState(false);
@@ -75,7 +79,7 @@ export const Header: React.FC<HeaderProps> = ({
             <LineChart size={20} />
           </div>
           <h1 style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-main)', letterSpacing: '-0.02em', margin: 0 }}>
-            StockSense
+            MarketWise
           </h1>
         </div>
 
@@ -212,6 +216,47 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
 
+        {/* Price Alerts Notification Button */}
+        {onOpenAlertModal && (
+          <button
+            onClick={onOpenAlertModal}
+            title={triggeredAlertCount > 0 ? `${triggeredAlertCount} alerts triggered!` : "Price Alerts"}
+            style={{
+              position: 'relative',
+              padding: '8px 10px',
+              borderRadius: '8px',
+              background: 'var(--surface-hover)',
+              border: '1px solid var(--border)',
+              color: triggeredAlertCount > 0 ? 'var(--danger)' : 'var(--text-muted)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              transition: 'all 0.15s'
+            }}
+          >
+            <Bell size={18} />
+            {triggeredAlertCount > 0 && (
+              <span
+                style={{
+                  position: 'absolute',
+                  top: '-4px',
+                  right: '-4px',
+                  background: 'var(--danger)',
+                  color: 'white',
+                  borderRadius: '10px',
+                  padding: '2px 5px',
+                  fontSize: '0.65rem',
+                  fontWeight: 700,
+                  lineHeight: 1
+                }}
+              >
+                {triggeredAlertCount}
+              </span>
+            )}
+          </button>
+        )}
+
         {/* User Authentication Status */}
         {user ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -266,3 +311,4 @@ export const Header: React.FC<HeaderProps> = ({
     </header>
   );
 };
+
